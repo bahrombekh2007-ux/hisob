@@ -1,23 +1,1268 @@
 # -*- coding: utf-8 -*-
 """
-Render'da ishga tushirish nuqtasi.
-Bitta process ichida:
-  - Telegram bot (polling) alohida threadda ishlaydi
-  - Flask web-server asosiy threadda ishlaydi va PORT'ni tinglaydi
-Render "Start Command": python main.py
+Hisobchi — To'liq backend va Telegram bot (bitta faylda)
+- Flask web-server
+- Telegram bot (polling) alohida threadda
+- PostgreSQL (Render Postgres) bilan ishlaydi
 """
 import os
+import hmac
+import hashlib
+import json
+import io
+import asyncio
 import threading
 import time
 import logging
+from datetime import datetime
+from urllib.parse import parse_qsl
 
+import psycopg2
+import psycopg2.extras
+import requests
+from flask import Flask, request, jsonify, render_template, send_file
+
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER
+
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.filters import CommandStart
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardRemove,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    WebAppInfo,
+    MenuButtonWebApp,
+)
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("main")
-
-from app import app, init_db
-from bot import start_bot
+logger = logging.getLogger("hisobchi")
 
 
+# ---------------------------------------------------------------------------
+# Environment variables
+# ---------------------------------------------------------------------------
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "")
+WEBAPP_URL = os.environ.get("WEBAPP_URL", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+try:
+    ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+except ValueError:
+    ADMIN_ID = 0
+
+
+# ---------------------------------------------------------------------------
+# Flask app
+# ---------------------------------------------------------------------------
+app = Flask(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Ma'lumotlar bazasi - Render internal database uchun SSL O'CHIRILGAN
+# ---------------------------------------------------------------------------
+def get_conn():
+    """Render internal database uchun ulanish - SSL O'CHIRILGAN."""
+    import urllib.parse
+    
+    db_url = DATABASE_URL
+    
+    # URL ni parse qilamiz
+    parsed = urllib.parse.urlparse(db_url)
+    
+    # Query parametrlarini olib tashlaymiz (sslmode, ssl va boshqalar)
+    if parsed.query:
+        db_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    
+    # SSLsiz ulanish
+    conn = psycopg2.connect(db_url)
+    return conn
+
+
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            telegram_id BIGINT PRIMARY KEY,
+            phone TEXT NOT NULL,
+            first_name TEXT,
+            last_name TEXT,
+            username TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            id SERIAL PRIMARY KEY,
+            telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+            type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
+            amount NUMERIC NOT NULL,
+            category TEXT DEFAULT '',
+            note TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions(telegram_id)")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS debts (
+            id SERIAL PRIMARY KEY,
+            telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+            direction TEXT NOT NULL CHECK (direction IN ('given', 'taken')),
+            person_name TEXT NOT NULL,
+            amount NUMERIC NOT NULL,
+            note TEXT DEFAULT '',
+            is_paid BOOLEAN DEFAULT FALSE,
+            is_payment BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT NOW(),
+            paid_at TIMESTAMP
+        )
+    """)
+    cur.execute("ALTER TABLE debts ADD COLUMN IF NOT EXISTS is_payment BOOLEAN DEFAULT FALSE")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_debts_user ON debts(telegram_id)")
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_user(telegram_id):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM users WHERE telegram_id = %s", (telegram_id,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+
+def upsert_user(telegram_id, phone, first_name, last_name, username):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO users (telegram_id, phone, first_name, last_name, username)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (telegram_id) DO UPDATE
+        SET phone = EXCLUDED.phone,
+            first_name = EXCLUDED.first_name,
+            last_name = EXCLUDED.last_name,
+            username = EXCLUDED.username
+    """, (telegram_id, phone, first_name, last_name, username))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_transactions(telegram_id):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        "SELECT * FROM transactions WHERE telegram_id = %s ORDER BY created_at DESC",
+        (telegram_id,)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def add_transaction(telegram_id, type_, amount, category, note):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("""
+        INSERT INTO transactions (telegram_id, type, amount, category, note)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING *
+    """, (telegram_id, type_, amount, category, note))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row
+
+
+def get_transaction(telegram_id, tx_id):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        "SELECT * FROM transactions WHERE id = %s AND telegram_id = %s",
+        (tx_id, telegram_id)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+
+def delete_transaction(telegram_id, tx_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM transactions WHERE id = %s AND telegram_id = %s",
+        (tx_id, telegram_id)
+    )
+    deleted = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    return deleted > 0
+
+
+def update_transaction(telegram_id, tx_id, type_, amount, category, note):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("""
+        UPDATE transactions
+        SET type = %s, amount = %s, category = %s, note = %s
+        WHERE id = %s AND telegram_id = %s
+        RETURNING *
+    """, (type_, amount, category, note, tx_id, telegram_id))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row
+
+
+def get_admin_stats():
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cur.execute("SELECT COUNT(*) AS c FROM users")
+    total_users = cur.fetchone()["c"]
+
+    cur.execute("SELECT COUNT(*) AS c FROM transactions")
+    total_transactions = cur.fetchone()["c"]
+
+    cur.execute("SELECT COUNT(*) AS c FROM debts")
+    total_debts = cur.fetchone()["c"]
+
+    cur.execute("""
+        SELECT
+            COALESCE(SUM(amount) FILTER (WHERE type = 'income'), 0) AS income,
+            COALESCE(SUM(amount) FILTER (WHERE type = 'expense'), 0) AS expense
+        FROM transactions
+        WHERE date_trunc('month', created_at) = date_trunc('month', NOW())
+    """)
+    month_row = cur.fetchone()
+
+    cur.execute("""
+        SELECT telegram_id, first_name, phone, created_at
+        FROM users
+        ORDER BY created_at DESC
+        LIMIT 5
+    """)
+    recent_users = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return {
+        "total_users": total_users,
+        "total_transactions": total_transactions,
+        "total_debts": total_debts,
+        "month_income": float(month_row["income"]),
+        "month_expense": float(month_row["expense"]),
+        "recent_users": recent_users,
+    }
+
+
+def get_monthly_summary(telegram_id):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("""
+        SELECT type, category, SUM(amount) AS total
+        FROM transactions
+        WHERE telegram_id = %s
+          AND date_trunc('month', created_at) = date_trunc('month', NOW())
+        GROUP BY type, category
+        ORDER BY total DESC
+    """, (telegram_id,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    income = 0.0
+    expense = 0.0
+    categories = []
+    for r in rows:
+        total = float(r["total"])
+        if r["type"] == "income":
+            income += total
+        else:
+            expense += total
+            categories.append((r["category"], total))
+
+    return {
+        "income": income,
+        "expense": expense,
+        "balance": income - expense,
+        "categories": categories,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Qarz daftari
+# ---------------------------------------------------------------------------
+def get_debts(telegram_id):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        "SELECT * FROM debts WHERE telegram_id = %s ORDER BY is_paid ASC, created_at DESC",
+        (telegram_id,)
+    )
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def add_debt(telegram_id, direction, person_name, amount, note, is_payment=False):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("""
+        INSERT INTO debts (telegram_id, direction, person_name, amount, note, is_payment)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING *
+    """, (telegram_id, direction, person_name, amount, note, is_payment))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row
+
+
+def get_debt(telegram_id, debt_id):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        "SELECT * FROM debts WHERE id = %s AND telegram_id = %s",
+        (debt_id, telegram_id)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+
+def update_debt(telegram_id, debt_id, person_name, amount, note):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("""
+        UPDATE debts
+        SET person_name = %s, amount = %s, note = %s
+        WHERE id = %s AND telegram_id = %s
+        RETURNING *
+    """, (person_name, amount, note, debt_id, telegram_id))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row
+
+
+def set_debt_paid(telegram_id, debt_id, is_paid):
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("""
+        UPDATE debts
+        SET is_paid = %s, paid_at = CASE WHEN %s THEN NOW() ELSE NULL END
+        WHERE id = %s AND telegram_id = %s
+        RETURNING *
+    """, (is_paid, is_paid, debt_id, telegram_id))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row
+
+
+def delete_debt(telegram_id, debt_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM debts WHERE id = %s AND telegram_id = %s",
+        (debt_id, telegram_id)
+    )
+    deleted = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    return deleted > 0
+
+
+# ---------------------------------------------------------------------------
+# Excel / PDF hisobot generatsiyasi
+# ---------------------------------------------------------------------------
+UZ_MONTHS = [
+    "yanvar", "fevral", "mart", "aprel", "may", "iyun",
+    "iyul", "avgust", "sentyabr", "oktyabr", "noyabr", "dekabr",
+]
+
+BRAND_DARK = "0A0E27"
+BRAND_GREEN = "00B894"
+BRAND_RED = "FF4757"
+
+
+def _monthly_breakdown(transactions):
+    months = {}
+    for t in transactions:
+        d = t["created_at"]
+        key = (d.year, d.month)
+        if key not in months:
+            months[key] = {"year": d.year, "month": d.month, "income": 0.0, "expense": 0.0}
+        if t["type"] == "income":
+            months[key]["income"] += float(t["amount"])
+        else:
+            months[key]["expense"] += float(t["amount"])
+    return sorted(months.values(), key=lambda m: (m["year"], m["month"]), reverse=True)
+
+
+def generate_excel_report(telegram_id, display_name):
+    transactions = get_transactions(telegram_id)
+    debts = get_debts(telegram_id)
+
+    wb = openpyxl.Workbook()
+
+    header_fill = PatternFill(start_color=BRAND_DARK, end_color=BRAND_DARK, fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=11)
+    title_font = Font(bold=True, size=14, color=BRAND_DARK)
+    thin_border = Border(*(Side(style="thin", color="DDDDDD"),) * 4)
+
+    def style_header_row(ws, row_num, ncols):
+        for col in range(1, ncols + 1):
+            cell = ws.cell(row=row_num, column=col)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    def autosize(ws, widths):
+        for i, w in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+
+    ws1 = wb.active
+    ws1.title = "Oylik xulosa"
+    ws1["A1"] = "Hisobchi — Moliyaviy hisobot"
+    ws1["A1"].font = title_font
+    ws1["A2"] = f"Foydalanuvchi: {display_name}"
+    ws1["A3"] = f"Yaratildi: {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} (UTC)"
+
+    headers = ["Oy", "Kirim (so'm)", "Xarajat (so'm)", "Balans (so'm)"]
+    ws1.append([])
+    ws1.append(headers)
+    style_header_row(ws1, 5, len(headers))
+
+    for m in _monthly_breakdown(transactions):
+        balance = m["income"] - m["expense"]
+        label = f"{UZ_MONTHS[m['month'] - 1]} {m['year']}"
+        ws1.append([label, m["income"], m["expense"], balance])
+
+    for row in ws1.iter_rows(min_row=6, max_row=ws1.max_row, min_col=1, max_col=4):
+        for cell in row:
+            cell.border = thin_border
+            if cell.column > 1:
+                cell.number_format = "#,##0"
+
+    autosize(ws1, [22, 18, 18, 18])
+
+    ws2 = wb.create_sheet("Tranzaksiyalar")
+    headers2 = ["Sana", "Turi", "Summa (so'm)", "Kategoriya", "Izoh"]
+    ws2.append(headers2)
+    style_header_row(ws2, 1, len(headers2))
+
+    for t in transactions:
+        ws2.append([
+            t["created_at"].strftime("%d.%m.%Y %H:%M"),
+            "Kirim" if t["type"] == "income" else "Xarajat",
+            float(t["amount"]),
+            t["category"] or "",
+            t["note"] or "",
+        ])
+
+    for row in ws2.iter_rows(min_row=2, max_row=max(ws2.max_row, 2), min_col=1, max_col=5):
+        for cell in row:
+            cell.border = thin_border
+            if cell.column == 3:
+                cell.number_format = "#,##0"
+
+    autosize(ws2, [18, 12, 16, 20, 30])
+
+    ws3 = wb.create_sheet("Qarz daftari")
+    headers3 = ["Ism", "Yo'nalish", "Summa (so'm)", "Holat", "Sana", "Izoh"]
+    ws3.append(headers3)
+    style_header_row(ws3, 1, len(headers3))
+
+    for d in debts:
+        ws3.append([
+            d["person_name"],
+            "Menga qarzdor" if d["direction"] == "given" else "Men qarzdorman",
+            float(d["amount"]),
+            "To'landi" if d["is_paid"] else "To'lanmagan",
+            d["created_at"].strftime("%d.%m.%Y"),
+            d["note"] or "",
+        ])
+
+    for row in ws3.iter_rows(min_row=2, max_row=max(ws3.max_row, 2), min_col=1, max_col=6):
+        for cell in row:
+            cell.border = thin_border
+            if cell.column == 3:
+                cell.number_format = "#,##0"
+
+    autosize(ws3, [18, 16, 16, 14, 14, 30])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def generate_pdf_report(telegram_id, display_name):
+    transactions = get_transactions(telegram_id)
+    debts = get_debts(telegram_id)
+    months = _monthly_breakdown(transactions)
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        leftMargin=16 * mm, rightMargin=16 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "TitleUz", parent=styles["Title"], fontSize=18,
+        textColor=colors.HexColor("#0A0E27"), alignment=TA_CENTER, spaceAfter=4,
+    )
+    meta_style = ParagraphStyle(
+        "MetaUz", parent=styles["Normal"], fontSize=9,
+        textColor=colors.HexColor("#666666"), alignment=TA_CENTER, spaceAfter=14,
+    )
+    section_style = ParagraphStyle(
+        "SectionUz", parent=styles["Heading2"], fontSize=13,
+        textColor=colors.HexColor("#0A0E27"), spaceBefore=14, spaceAfter=8,
+    )
+
+    def fmt_num(n):
+        return f"{n:,.0f}".replace(",", " ")
+
+    elements = [
+        Paragraph("Hisobchi — Moliyaviy hisobot", title_style),
+        Paragraph(
+            f"Foydalanuvchi: {display_name} &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"Yaratildi: {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} (UTC)",
+            meta_style,
+        ),
+    ]
+
+    total_income = sum(float(t["amount"]) for t in transactions if t["type"] == "income")
+    total_expense = sum(float(t["amount"]) for t in transactions if t["type"] == "expense")
+
+    elements.append(Paragraph("Umumiy holat", section_style))
+    summary_data = [
+        ["Jami kirim", "Jami xarajat", "Balans"],
+        [f"{fmt_num(total_income)} so'm", f"{fmt_num(total_expense)} so'm",
+         f"{fmt_num(total_income - total_expense)} so'm"],
+    ]
+    summary_table = Table(summary_data, colWidths=[55 * mm, 55 * mm, 55 * mm])
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0A0E27")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTSIZE", (0, 0), (-1, -1), 10),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#DDDDDD")),
+    ]))
+    elements.append(summary_table)
+
+    if months:
+        elements.append(Paragraph("Oylik xulosa", section_style))
+        month_rows = [["Oy", "Kirim", "Xarajat", "Balans"]]
+        for m in months:
+            balance = m["income"] - m["expense"]
+            month_rows.append([
+                f"{UZ_MONTHS[m['month'] - 1]} {m['year']}",
+                fmt_num(m["income"]), fmt_num(m["expense"]), fmt_num(balance),
+            ])
+        month_table = Table(month_rows, colWidths=[45 * mm, 40 * mm, 40 * mm, 40 * mm])
+        month_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0A0E27")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("ALIGN", (0, 0), (0, -1), "LEFT"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F6FA")]),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#DDDDDD")),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(month_table)
+
+    if debts:
+        elements.append(Paragraph("Qarz daftari", section_style))
+        debt_rows = [["Ism", "Yo'nalish", "Summa", "Holat"]]
+        for d in debts:
+            debt_rows.append([
+                d["person_name"],
+                "Menga qarzdor" if d["direction"] == "given" else "Men qarzdorman",
+                fmt_num(float(d["amount"])),
+                "To'landi" if d["is_paid"] else "To'lanmagan",
+            ])
+        debt_table = Table(debt_rows, colWidths=[45 * mm, 40 * mm, 35 * mm, 45 * mm])
+        debt_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0A0E27")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ALIGN", (2, 0), (2, -1), "RIGHT"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F6FA")]),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#DDDDDD")),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(debt_table)
+
+    if transactions:
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph("Barcha tranzaksiyalar", section_style))
+        tx_rows = [["Sana", "Turi", "Summa", "Kategoriya"]]
+        for t in transactions:
+            tx_rows.append([
+                t["created_at"].strftime("%d.%m.%Y %H:%M"),
+                "Kirim" if t["type"] == "income" else "Xarajat",
+                fmt_num(float(t["amount"])),
+                t["category"] or "",
+            ])
+        tx_table = Table(tx_rows, colWidths=[38 * mm, 25 * mm, 32 * mm, 65 * mm], repeatRows=1)
+        tx_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0A0E27")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ALIGN", (2, 0), (2, -1), "RIGHT"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F6FA")]),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#DDDDDD")),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(tx_table)
+
+    doc.build(elements)
+    buf.seek(0)
+    return buf
+
+
+# ---------------------------------------------------------------------------
+# Telegram WebApp initData tekshiruvi
+# ---------------------------------------------------------------------------
+def verify_init_data(init_data: str):
+    if not init_data or not BOT_TOKEN:
+        return None
+    try:
+        pairs = dict(parse_qsl(init_data, strict_parsing=True))
+    except ValueError:
+        return None
+
+    received_hash = pairs.pop("hash", None)
+    if not received_hash:
+        return None
+
+    data_check_string = "\n".join(
+        f"{k}={v}" for k, v in sorted(pairs.items())
+    )
+    secret_key = hmac.new(
+        b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256
+    ).digest()
+    computed_hash = hmac.new(
+        secret_key, data_check_string.encode(), hashlib.sha256
+    ).hexdigest()
+
+    if not hmac.compare_digest(computed_hash, received_hash):
+        return None
+
+    user_raw = pairs.get("user")
+    if not user_raw:
+        return None
+    try:
+        user = json.loads(user_raw)
+    except json.JSONDecodeError:
+        return None
+
+    return user
+
+
+def require_auth():
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    user = verify_init_data(init_data)
+    if user is None:
+        return None, (jsonify({"error": "Telegram orqali kiring"}), 401)
+    return user, None
+
+
+def require_registered():
+    user, err = require_auth()
+    if err:
+        return None, err
+    db_user = get_user(user["id"])
+    if not db_user:
+        return None, (jsonify({
+            "error": "not_registered",
+            "message": "Avval botda ro'yxatdan o'ting"
+        }), 403)
+    return user, None
+
+
+def is_admin_user(telegram_id):
+    return ADMIN_ID != 0 and telegram_id == ADMIN_ID
+
+
+def require_admin():
+    user, err = require_registered()
+    if err:
+        return None, err
+    if not is_admin_user(user["id"]):
+        return None, (jsonify({
+            "error": "faqat admin tahrirlashi/o'chirishi mumkin"
+        }), 403)
+    return user, None
+
+
+# ---------------------------------------------------------------------------
+# Sahifalar va API
+# ---------------------------------------------------------------------------
+def to_utc_iso(dt):
+    return dt.isoformat() + "Z"
+
+
+@app.route("/")
+def index():
+    return render_template("index.html", bot_username=BOT_USERNAME)
+
+
+@app.route("/api/me")
+def api_me():
+    user, err = require_auth()
+    if err:
+        return err
+    db_user = get_user(user["id"])
+    if not db_user:
+        return jsonify({"registered": False}), 200
+    return jsonify({
+        "registered": True,
+        "first_name": db_user["first_name"] or user.get("first_name", ""),
+        "phone": db_user["phone"],
+        "is_admin": is_admin_user(user["id"]),
+    }), 200
+
+
+@app.route("/api/transactions", methods=["GET"])
+def api_list_transactions():
+    user, err = require_registered()
+    if err:
+        return err
+    rows = get_transactions(user["id"])
+    result = [{
+        "id": r["id"],
+        "type": r["type"],
+        "amount": float(r["amount"]),
+        "category": r["category"],
+        "note": r["note"],
+        "created_at": to_utc_iso(r["created_at"]),
+    } for r in rows]
+    return jsonify(result)
+
+
+@app.route("/api/transactions", methods=["POST"])
+def api_add_transaction():
+    user, err = require_registered()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    type_ = data.get("type")
+    amount = data.get("amount")
+    category = (data.get("category") or "").strip()[:100]
+    note = (data.get("note") or "").strip()[:200]
+
+    if type_ not in ("income", "expense"):
+        return jsonify({"error": "noto'g'ri turi"}), 400
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "noto'g'ri summa"}), 400
+    if amount <= 0:
+        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
+    if type_ == "expense" and not category:
+        return jsonify({"error": "kategoriya kerak"}), 400
+
+    row = add_transaction(user["id"], type_, amount, category or "kirim", note)
+    return jsonify({
+        "id": row["id"],
+        "type": row["type"],
+        "amount": float(row["amount"]),
+        "category": row["category"],
+        "note": row["note"],
+        "created_at": to_utc_iso(row["created_at"]),
+    }), 201
+
+
+@app.route("/api/transactions/<int:tx_id>", methods=["PUT"])
+def api_update_transaction(tx_id):
+    user, err = require_admin()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    type_ = data.get("type")
+    amount = data.get("amount")
+    category = (data.get("category") or "").strip()[:100]
+    note = (data.get("note") or "").strip()[:200]
+
+    if type_ not in ("income", "expense"):
+        return jsonify({"error": "noto'g'ri turi"}), 400
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "noto'g'ri summa"}), 400
+    if amount <= 0:
+        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
+    if type_ == "expense" and not category:
+        return jsonify({"error": "kategoriya kerak"}), 400
+
+    row = update_transaction(user["id"], tx_id, type_, amount, category or "kirim", note)
+    if not row:
+        return jsonify({"error": "topilmadi"}), 404
+
+    return jsonify({
+        "id": row["id"],
+        "type": row["type"],
+        "amount": float(row["amount"]),
+        "category": row["category"],
+        "note": row["note"],
+        "created_at": to_utc_iso(row["created_at"]),
+    }), 200
+
+
+@app.route("/api/transactions/<int:tx_id>", methods=["DELETE"])
+def api_delete_transaction(tx_id):
+    user, err = require_admin()
+    if err:
+        return err
+    ok = delete_transaction(user["id"], tx_id)
+    if not ok:
+        return jsonify({"error": "topilmadi"}), 404
+    return jsonify({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# API — Qarz daftari
+# ---------------------------------------------------------------------------
+def serialize_debt(row):
+    return {
+        "id": row["id"],
+        "direction": row["direction"],
+        "person_name": row["person_name"],
+        "amount": float(row["amount"]),
+        "note": row["note"],
+        "is_paid": row["is_paid"],
+        "is_payment": bool(row["is_payment"]),
+        "created_at": to_utc_iso(row["created_at"]),
+        "paid_at": to_utc_iso(row["paid_at"]) if row["paid_at"] else None,
+    }
+
+
+@app.route("/api/debts", methods=["GET"])
+def api_list_debts():
+    user, err = require_registered()
+    if err:
+        return err
+    rows = get_debts(user["id"])
+    return jsonify([serialize_debt(r) for r in rows])
+
+
+@app.route("/api/debts", methods=["POST"])
+def api_add_debt():
+    user, err = require_registered()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    direction = data.get("direction")
+    person_name = (data.get("person_name") or "").strip()[:100]
+    amount = data.get("amount")
+    note = (data.get("note") or "").strip()[:200]
+    is_payment = bool(data.get("is_payment", False))
+
+    if direction not in ("given", "taken"):
+        return jsonify({"error": "noto'g'ri turi"}), 400
+    if not person_name:
+        return jsonify({"error": "ism kiritilmagan"}), 400
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "noto'g'ri summa"}), 400
+    if amount <= 0:
+        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
+
+    row = add_debt(user["id"], direction, person_name, amount, note, is_payment)
+    return jsonify(serialize_debt(row)), 201
+
+
+@app.route("/api/debts/<int:debt_id>", methods=["PUT"])
+def api_update_debt(debt_id):
+    user, err = require_admin()
+    if err:
+        return err
+
+    existing = get_debt(user["id"], debt_id)
+    if not existing:
+        return jsonify({"error": "topilmadi"}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    if "is_paid" in data and len(data) == 1:
+        row = set_debt_paid(user["id"], debt_id, bool(data["is_paid"]))
+        return jsonify(serialize_debt(row))
+
+    person_name = (data.get("person_name") or "").strip()[:100]
+    amount = data.get("amount")
+    note = (data.get("note") or "").strip()[:200]
+
+    if not person_name:
+        return jsonify({"error": "ism kiritilmagan"}), 400
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "noto'g'ri summa"}), 400
+    if amount <= 0:
+        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
+
+    row = update_debt(user["id"], debt_id, person_name, amount, note)
+    if not row:
+        return jsonify({"error": "topilmadi"}), 404
+    return jsonify(serialize_debt(row))
+
+
+@app.route("/api/debts/<int:debt_id>", methods=["DELETE"])
+def api_delete_debt(debt_id):
+    user, err = require_admin()
+    if err:
+        return err
+    ok = delete_debt(user["id"], debt_id)
+    if not ok:
+        return jsonify({"error": "topilmadi"}), 404
+    return jsonify({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# API — Excel / PDF hisobot
+# ---------------------------------------------------------------------------
+def send_telegram_document(chat_id, filename, file_bytes, caption=""):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument"
+    files = {"document": (filename, file_bytes)}
+    data = {"chat_id": chat_id, "caption": caption}
+    resp = requests.post(url, data=data, files=files, timeout=30)
+    resp.raise_for_status()
+    result = resp.json()
+    if not result.get("ok"):
+        raise RuntimeError(result.get("description", "Telegram xatosi"))
+    return result
+
+
+@app.route("/api/export/send", methods=["POST"])
+def api_export_send():
+    user, err = require_registered()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    fmt = data.get("format")
+    if fmt not in ("excel", "pdf"):
+        return jsonify({"error": "noto'g'ri format"}), 400
+
+    db_user = get_user(user["id"])
+    display_name = db_user["first_name"] or user.get("first_name", "Foydalanuvchi")
+
+    try:
+        if fmt == "excel":
+            buf = generate_excel_report(user["id"], display_name)
+            filename = f"hisobchi_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
+        else:
+            buf = generate_pdf_report(user["id"], display_name)
+            filename = f"hisobchi_{datetime.utcnow().strftime('%Y%m%d')}.pdf"
+
+        send_telegram_document(
+            user["id"], filename, buf.read(),
+            caption="📊 Moliyaviy hisobotingiz tayyor."
+        )
+    except Exception as e:
+        return jsonify({"error": f"hisobotni yuborib bo'lmadi: {e}"}), 500
+
+    return jsonify({"success": True})
+
+
+@app.route("/api/export/excel")
+def api_export_excel():
+    user, err = require_registered()
+    if err:
+        return err
+    db_user = get_user(user["id"])
+    display_name = db_user["first_name"] or user.get("first_name", "Foydalanuvchi")
+
+    buf = generate_excel_report(user["id"], display_name)
+    filename = f"hisobchi_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
+    return send_file(
+        buf,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@app.route("/api/export/pdf")
+def api_export_pdf():
+    user, err = require_registered()
+    if err:
+        return err
+    db_user = get_user(user["id"])
+    display_name = db_user["first_name"] or user.get("first_name", "Foydalanuvchi")
+
+    buf = generate_pdf_report(user["id"], display_name)
+    filename = f"hisobchi_{datetime.utcnow().strftime('%Y%m%d')}.pdf"
+    return send_file(
+        buf,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Telegram Bot
+# ---------------------------------------------------------------------------
+router = Router()
+dp = Dispatcher()
+dp.include_router(router)
+
+
+def contact_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📱 Raqamni yuborish", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def webapp_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="📊 Hisobchini ochish",
+                web_app=WebAppInfo(url=WEBAPP_URL),
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📅 Oylik hisobot",
+                callback_data="monthly_report",
+            )
+        ],
+    ]
+    if is_admin:
+        rows.append([
+            InlineKeyboardButton(
+                text="🛠 Admin panel",
+                callback_data="admin_panel",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def format_monthly_report(summary: dict) -> str:
+    now = datetime.now()
+    month_name = UZ_MONTHS[now.month - 1]
+
+    def fmt(n):
+        return f"{n:,.0f}".replace(",", " ")
+
+    lines = [f"📅 <b>{month_name.capitalize()} oyi uchun hisobot</b>\n"]
+    lines.append(f"➕ Kirim: <b>{fmt(summary['income'])} so'm</b>")
+    lines.append(f"➖ Xarajat: <b>{fmt(summary['expense'])} so'm</b>")
+    lines.append(f"💰 Balans: <b>{fmt(summary['balance'])} so'm</b>")
+
+    if summary["categories"]:
+        lines.append("\n<b>Xarajatlar taqsimoti:</b>")
+        total_expense = summary["expense"] or 1
+        for cat, val in summary["categories"][:8]:
+            pct = round(val / total_expense * 100)
+            lines.append(f"• {cat} — {fmt(val)} so'm ({pct}%)")
+    else:
+        lines.append("\nBu oyda hali xarajat kiritilmagan.")
+
+    return "\n".join(lines)
+
+
+@router.message(CommandStart())
+async def cmd_start(message: Message):
+    is_admin = ADMIN_ID != 0 and message.from_user.id == ADMIN_ID
+    user = get_user(message.from_user.id)
+
+    if user:
+        greeting = (
+            f"Salom, <b>{message.from_user.first_name}</b>! 👋 (admin)\n\n"
+            "Hisobchi tayyor. Odatdagidek kirim/xarajatlaringizni boshqarishingiz "
+            "mumkin, shu bilan birga admin panelidan ham foydalanishingiz mumkin."
+            if is_admin else
+            f"Salom, <b>{message.from_user.first_name}</b>! 👋\n\n"
+            "Hisobchi tayyor — kirim va xarajatlaringizni boshqarish uchun "
+            "quyidagi tugmani bosing."
+        )
+        await message.answer(greeting, reply_markup=webapp_keyboard(is_admin))
+        return
+
+    await message.answer(
+        "Assalomu alaykum! 👋\n\n"
+        "<b>Hisobchi</b> botiga xush kelibsiz — bu bot orqali kirim va "
+        "xarajatlaringizni qulay tarzda hisoblab borishingiz mumkin.\n\n"
+        "Davom etish uchun avval telefon raqamingizni tasdiqlashingiz kerak. "
+        "Pastdagi tugmani bosing 👇",
+        reply_markup=contact_keyboard(),
+    )
+
+
+@router.message(F.contact)
+async def on_contact(message: Message):
+    contact = message.contact
+    if contact.user_id != message.from_user.id:
+        await message.answer(
+            "❗️ Iltimos, faqat <b>o'zingizning</b> raqamingizni yuboring.",
+            reply_markup=contact_keyboard(),
+        )
+        return
+
+    upsert_user(
+        telegram_id=message.from_user.id,
+        phone=contact.phone_number,
+        first_name=message.from_user.first_name,
+        last_name=message.from_user.last_name,
+        username=message.from_user.username,
+    )
+
+    await message.answer(
+        "✅ Ro'yxatdan muvaffaqiyatli o'tdingiz!",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await message.answer(
+        "Endi Hisobchidan foydalanishingiz mumkin 👇",
+        reply_markup=webapp_keyboard(ADMIN_ID != 0 and message.from_user.id == ADMIN_ID),
+    )
+
+
+@router.message()
+async def block_unregistered(message: Message):
+    user = get_user(message.from_user.id)
+    if user:
+        is_admin = ADMIN_ID != 0 and message.from_user.id == ADMIN_ID
+        await message.answer(
+            "Hisobchini ochish uchun tugmani bosing 👇",
+            reply_markup=webapp_keyboard(is_admin),
+        )
+    else:
+        await message.answer(
+            "Davom etish uchun avval telefon raqamingizni yuboring 👇",
+            reply_markup=contact_keyboard(),
+        )
+
+
+@router.callback_query(F.data == "monthly_report")
+async def on_monthly_report(callback: CallbackQuery):
+    user = get_user(callback.from_user.id)
+    if not user:
+        await callback.answer("Avval ro'yxatdan o'ting", show_alert=True)
+        return
+
+    summary = get_monthly_summary(callback.from_user.id)
+    text = format_monthly_report(summary)
+    await callback.message.answer(text)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_panel")
+async def on_admin_panel(callback: CallbackQuery):
+    if ADMIN_ID == 0 or callback.from_user.id != ADMIN_ID:
+        await callback.answer("Bu bo'lim faqat admin uchun", show_alert=True)
+        return
+
+    stats = get_admin_stats()
+
+    def fmt(n):
+        return f"{n:,.0f}".replace(",", " ")
+
+    lines = [
+        "🛠 <b>Admin panel</b>\n",
+        f"👥 Ro'yxatdan o'tganlar: <b>{stats['total_users']}</b>",
+        f"📝 Jami kirim/xarajat yozuvlari: <b>{stats['total_transactions']}</b>",
+        f"🤝 Jami qarz yozuvlari: <b>{stats['total_debts']}</b>",
+        "",
+        "<b>Shu oy (barcha foydalanuvchilar bo'yicha):</b>",
+        f"➕ Kirim: {fmt(stats['month_income'])} so'm",
+        f"➖ Xarajat: {fmt(stats['month_expense'])} so'm",
+    ]
+
+    if stats["recent_users"]:
+        lines.append("\n<b>So'nggi ro'yxatdan o'tganlar:</b>")
+        for u in stats["recent_users"]:
+            name = u["first_name"] or "noma'lum"
+            phone = u["phone"] or "-"
+            lines.append(f"• {name} — {phone}")
+
+    await callback.message.answer("\n".join(lines), reply_markup=webapp_keyboard(True))
+    await callback.answer()
+
+
+async def _run_polling():
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="📊 Hisobchi",
+                web_app=WebAppInfo(url=WEBAPP_URL),
+            )
+        )
+        await dp.start_polling(bot, handle_signals=False)
+    finally:
+        await bot.session.close()
+
+
+def start_bot():
+    """Alohida thread ichidan chaqiriladi."""
+    init_db()
+    asyncio.run(_run_polling())
+
+
+# ---------------------------------------------------------------------------
+# Asosiy ishga tushirish
+# ---------------------------------------------------------------------------
 def run_bot_thread():
     while True:
         try:
@@ -30,9 +1275,12 @@ def run_bot_thread():
 
 if __name__ == "__main__":
     init_db()
+    logger.info("Database initialized")
 
     bot_thread = threading.Thread(target=run_bot_thread, daemon=True)
     bot_thread.start()
+    logger.info("Bot thread started")
 
     port = int(os.environ.get("PORT", 5000))
+    logger.info(f"Flask server starting on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True, use_reloader=False)
