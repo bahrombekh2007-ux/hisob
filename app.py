@@ -30,7 +30,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-BOT_USERNAME = os.environ.get("BOT_USERNAME", "")  # masalan: mening_hisobchi_bot (@ belgisisiz)
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "")  # masalan: mening_hisobchi_bot (@ belgisiz)
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 # Faqat shu Telegram ID'ga ega foydalanuvchi tahrirlash/o'chirish va admin
@@ -47,10 +47,15 @@ app = Flask(__name__)
 # Ma'lumotlar bazasi
 # ---------------------------------------------------------------------------
 def get_conn():
-    """Har chaqiriqda yangi ulanish (Render'da connection pool shart emas,
-    lekin xohlasangiz keyinchalik psycopg2.pool ga o'tkazish oson)."""
-    conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-    return conn
+    """Har chaqiriqda yangi ulanish - Render internal database uchun SSL o'chirilgan."""
+    try:
+        # Avval SSL bilan ulanishga harakat qilamiz
+        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+        return conn
+    except Exception:
+        # Agar SSL ishlamasa, SSLsiz ulanish
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn
 
 
 def init_db():
