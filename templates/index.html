@@ -1348,6 +1348,7 @@
         }
 
         let transactions = [];
+        let IS_ADMIN = false;
 
         const $ = (s) => document.querySelector(s);
         const $$ = (s) => document.querySelectorAll(s);
@@ -1469,6 +1470,8 @@
                     showGate('gateNotRegistered');
                     return;
                 }
+
+                IS_ADMIN = !!me.is_admin;
 
                 $('#userName').textContent = me.first_name || tg.initDataUnsafe?.user?.first_name || 'foydalanuvchi';
                 if (me.phone) {
@@ -1693,6 +1696,12 @@
                 .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
                 .map(t => {
                     const timeStr = new Date(t.created_at).toLocaleTimeString('uz-UZ', { hour: '2-digit', minute: '2-digit' });
+                    const actionsHTML = IS_ADMIN ? `
+                            <div class="tx-actions">
+                                <button class="tx-icon-btn edit-btn" data-id="${t.id}" data-type="income" data-amount="${t.amount}" data-category="" data-note="${escapeAttr(t.note)}">${icon('edit')}</button>
+                                <button class="tx-icon-btn delete-btn" data-id="${t.id}">${icon('trash')}</button>
+                            </div>
+                    ` : '';
                     return `
                         <div class="tx-item">
                             <div class="tx-icon-box income-box">${icon('arrowUp')}</div>
@@ -1701,10 +1710,7 @@
                                 <div class="tx-date">${timeStr}${t.note ? '<span class="tx-note-small"> · ' + t.note + '</span>' : ''}</div>
                             </div>
                             <div class="tx-sum green">+${fmt(t.amount)}</div>
-                            <div class="tx-actions">
-                                <button class="tx-icon-btn edit-btn" data-id="${t.id}" data-type="income" data-amount="${t.amount}" data-category="" data-note="${escapeAttr(t.note)}">${icon('edit')}</button>
-                                <button class="tx-icon-btn delete-btn" data-id="${t.id}">${icon('trash')}</button>
-                            </div>
+                            ${actionsHTML}
                         </div>
                     `;
                 }).join('');
@@ -1835,7 +1841,7 @@
             const boxIcon = t.type === 'income' ? icon('arrowUp') : icon('arrowDown');
             const desc = t.type === 'income' ? 'Kirim' : t.category;
 
-            const actionsHTML = showActions ? `
+            const actionsHTML = (showActions && IS_ADMIN) ? `
                 <div class="tx-actions">
                     <button class="tx-icon-btn edit-btn" data-id="${t.id}" data-type="${t.type}" data-amount="${t.amount}" data-category="${escapeAttr(t.category)}" data-note="${escapeAttr(t.note)}">${icon('edit')}</button>
                     <button class="tx-icon-btn delete-btn" data-id="${t.id}">${icon('trash')}</button>
@@ -2115,7 +2121,14 @@
                     const dateStr = new Date(d.created_at).toLocaleDateString('uz-UZ', { day: '2-digit', month: 'short', year: 'numeric' });
                     const sign = d.is_payment ? '−' : '+';
                     const amountCls = d.is_payment ? 'blue-text' : cls;
-                    const paidBtnHTML = d.is_payment ? '' : `<button class="debt-paid-btn" data-id="${d.id}" data-paid="${d.is_paid ? '0' : '1'}" title="${d.is_paid ? 'qaytadan ochish' : "to'landi deb belgilash"}">${d.is_paid ? icon('undo') : icon('check')}</button>`;
+                    const paidBtnHTML = (!d.is_payment && IS_ADMIN) ? `<button class="debt-paid-btn" data-id="${d.id}" data-paid="${d.is_paid ? '0' : '1'}" title="${d.is_paid ? 'qaytadan ochish' : "to'landi deb belgilash"}">${d.is_paid ? icon('undo') : icon('check')}</button>` : '';
+                    const debtActionsHTML = IS_ADMIN ? `
+                            <div class="tx-actions">
+                                ${paidBtnHTML}
+                                <button class="tx-icon-btn edit-btn debt-edit-btn" data-id="${d.id}" data-person="${escapeAttr(d.person_name)}" data-amount="${d.amount}" data-note="${escapeAttr(d.note)}">${icon('edit')}</button>
+                                <button class="tx-icon-btn delete-btn debt-delete-btn" data-id="${d.id}">${icon('trash')}</button>
+                            </div>
+                    ` : '';
                     return `
                         <div class="tx-item debt-item ${d.is_paid ? 'debt-paid' : ''}">
                             <div class="tx-icon-box ${boxCls}">${icon('person')}</div>
@@ -2124,11 +2137,7 @@
                                 <div class="tx-date">${d.note ? escapeAttr(d.note) : "izohsiz"}</div>
                             </div>
                             <div class="tx-sum ${amountCls}">${sign}${fmt(d.amount)}</div>
-                            <div class="tx-actions">
-                                ${paidBtnHTML}
-                                <button class="tx-icon-btn edit-btn debt-edit-btn" data-id="${d.id}" data-person="${escapeAttr(d.person_name)}" data-amount="${d.amount}" data-note="${escapeAttr(d.note)}">${icon('edit')}</button>
-                                <button class="tx-icon-btn delete-btn debt-delete-btn" data-id="${d.id}">${icon('trash')}</button>
-                            </div>
+                            ${debtActionsHTML}
                         </div>
                     `;
                 }).join('');
