@@ -26,13 +26,18 @@ from aiogram.types import (
     MenuButtonWebApp,
 )
 
-from app import get_user, upsert_user, init_db, get_monthly_summary
+from app import get_user, upsert_user, init_db, get_monthly_summary, get_admin_stats
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hisobchi-bot")
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 WEBAPP_URL = os.environ.get("WEBAPP_URL", "")  # masalan: https://sizning-app.onrender.com
+
+try:
+    ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+except ValueError:
+    ADMIN_ID = 0
 
 # MUHIM: faqat Bot obyekti har safar start_bot() chaqirilganda yangidan
 # yaratiladi (chunki aiohttp sessiya aynan Bot ichida, joriy event loop'ga
@@ -54,8 +59,8 @@ def contact_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def webapp_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def webapp_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
+    rows = [
         [
             InlineKeyboardButton(
                 text="📊 Hisobchini ochish",
@@ -68,7 +73,15 @@ def webapp_keyboard() -> InlineKeyboardMarkup:
                 callback_data="monthly_report",
             )
         ],
-    ])
+    ]
+    if is_admin:
+        rows.append([
+            InlineKeyboardButton(
+                text="🛠 Admin panel",
+                callback_data="admin_panel",
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 UZ_MONTHS = [
@@ -104,14 +117,20 @@ def format_monthly_report(summary: dict) -> str:
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
+    is_admin = ADMIN_ID != 0 and message.from_user.id == ADMIN_ID
     user = get_user(message.from_user.id)
+
     if user:
-        await message.answer(
+        greeting = (
+            f"Salom, <b>{message.from_user.first_name}</b>! 👋 (admin)\n\n"
+            "Hisobchi tayyor. Odatdagidek kirim/xarajatlaringizni boshqarishingiz "
+            "mumkin, shu bilan birga admin panelidan ham foydalanishingiz mumkin."
+            if is_admin else
             f"Salom, <b>{message.from_user.first_name}</b>! 👋\n\n"
             "Hisobchi tayyor — kirim va xarajatlaringizni boshqarish uchun "
-            "quyidagi tugmani bosing.",
-            reply_markup=webapp_keyboard(),
+            "quyidagi tugmani bosing."
         )
+        await message.answer(greeting, reply_markup=webapp_keyboard(is_admin))
         return
 
     await message.answer(
@@ -150,7 +169,7 @@ async def on_contact(message: Message):
     )
     await message.answer(
         "Endi Hisobchidan foydalanishingiz mumkin 👇",
-        reply_markup=webapp_keyboard(),
+        reply_markup=webapp_keyboard(ADMIN_ID != 0 and message.from_user.id == ADMIN_ID),
     )
 
 
@@ -161,9 +180,10 @@ async def block_unregistered(message: Message):
     qayta yuboriladi."""
     user = get_user(message.from_user.id)
     if user:
+        is_admin = ADMIN_ID != 0 and message.from_user.id == ADMIN_ID
         await message.answer(
             "Hisobchini ochish uchun tugmani bosing 👇",
-            reply_markup=webapp_keyboard(),
+            reply_markup=webapp_keyboard(is_admin),
         )
     else:
         await message.answer(
@@ -182,6 +202,39 @@ async def on_monthly_report(callback: CallbackQuery):
     summary = get_monthly_summary(callback.from_user.id)
     text = format_monthly_report(summary)
     await callback.message.answer(text)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_panel")
+async def on_admin_panel(callback: CallbackQuery):
+    if ADMIN_ID == 0 or callback.from_user.id != ADMIN_ID:
+        await callback.answer("Bu bo'lim faqat admin uchun", show_alert=True)
+        return
+
+    stats = get_admin_stats()
+
+    def fmt(n):
+        return f"{n:,.0f}".replace(",", " ")
+
+    lines = [
+        "🛠 <b>Admin panel</b>\n",
+        f"👥 Ro'yxatdan o'tganlar: <b>{stats['total_users']}</b>",
+        f"📝 Jami kirim/xarajat yozuvlari: <b>{stats['total_transactions']}</b>",
+        f"🤝 Jami qarz yozuvlari: <b>{stats['total_debts']}</b>",
+        "",
+        "<b>Shu oy (barcha foydalanuvchilar bo'yicha):</b>",
+        f"➕ Kirim: {fmt(stats['month_income'])} so'm",
+        f"➖ Xarajat: {fmt(stats['month_expense'])} so'm",
+    ]
+
+    if stats["recent_users"]:
+        lines.append("\n<b>So'nggi ro'yxatdan o'tganlar:</b>")
+        for u in stats["recent_users"]:
+            name = u["first_name"] or "noma'lum"
+            phone = u["phone"] or "-"
+            lines.append(f"• {name} — {phone}")
+
+    await callback.message.answer("\n".join(lines), reply_markup=webapp_keyboard(True))
     await callback.answer()
 
 
