@@ -33,6 +33,13 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "")  # masalan: mening_hisobchi_bot (@ belgisisiz)
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
+# Faqat shu Telegram ID'ga ega foydalanuvchi tahrirlash/o'chirish va admin
+# panelidan foydalana oladi. Bo'sh qoldirilsa, hech kim admin bo'lmaydi.
+try:
+    ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+except ValueError:
+    ADMIN_ID = 0
+
 app = Flask(__name__)
 
 
@@ -191,6 +198,52 @@ def update_transaction(telegram_id, tx_id, type_, amount, category, note):
     cur.close()
     conn.close()
     return row
+
+
+def get_admin_stats():
+    """Admin panel uchun umumiy statistika: jami foydalanuvchilar,
+    jami yozuvlar soni, shu oy bo'yicha barcha foydalanuvchilarning
+    umumiy kirim/xarajati va so'nggi ro'yxatdan o'tganlar ro'yxati."""
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    cur.execute("SELECT COUNT(*) AS c FROM users")
+    total_users = cur.fetchone()["c"]
+
+    cur.execute("SELECT COUNT(*) AS c FROM transactions")
+    total_transactions = cur.fetchone()["c"]
+
+    cur.execute("SELECT COUNT(*) AS c FROM debts")
+    total_debts = cur.fetchone()["c"]
+
+    cur.execute("""
+        SELECT
+            COALESCE(SUM(amount) FILTER (WHERE type = 'income'), 0) AS income,
+            COALESCE(SUM(amount) FILTER (WHERE type = 'expense'), 0) AS expense
+        FROM transactions
+        WHERE date_trunc('month', created_at) = date_trunc('month', NOW())
+    """)
+    month_row = cur.fetchone()
+
+    cur.execute("""
+        SELECT telegram_id, first_name, phone, created_at
+        FROM users
+        ORDER BY created_at DESC
+        LIMIT 5
+    """)
+    recent_users = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return {
+        "total_users": total_users,
+        "total_transactions": total_transactions,
+        "total_debts": total_debts,
+        "month_income": float(month_row["income"]),
+        "month_expense": float(month_row["expense"]),
+        "recent_users": recent_users,
+    }
 
 
 def get_monthly_summary(telegram_id):
@@ -654,6 +707,24 @@ def require_registered():
     return user, None
 
 
+def is_admin_user(telegram_id):
+    return ADMIN_ID != 0 and telegram_id == ADMIN_ID
+
+
+def require_admin():
+    """Tahrirlash/o'chirish va admin panel faqat ADMIN_ID uchun ochiq.
+    Oddiy (admin bo'lmagan) ro'yxatdan o'tgan foydalanuvchilar ma'lumot
+    qo'sha oladi va ko'ra oladi, lekin tahrirlay yoki o'chira olmaydi."""
+    user, err = require_registered()
+    if err:
+        return None, err
+    if not is_admin_user(user["id"]):
+        return None, (jsonify({
+            "error": "faqat admin tahrirlashi/o'chirishi mumkin"
+        }), 403)
+    return user, None
+
+
 # ---------------------------------------------------------------------------
 # Sahifalar
 # ---------------------------------------------------------------------------
@@ -685,6 +756,7 @@ def api_me():
         "registered": True,
         "first_name": db_user["first_name"] or user.get("first_name", ""),
         "phone": db_user["phone"],
+        "is_admin": is_admin_user(user["id"]),
     }), 200
 
 
@@ -741,7 +813,7 @@ def api_add_transaction():
 
 @app.route("/api/transactions/<int:tx_id>", methods=["PUT"])
 def api_update_transaction(tx_id):
-    user, err = require_registered()
+    user, err = require_admin()
     if err:
         return err
 
@@ -778,7 +850,7 @@ def api_update_transaction(tx_id):
 
 @app.route("/api/transactions/<int:tx_id>", methods=["DELETE"])
 def api_delete_transaction(tx_id):
-    user, err = require_registered()
+    user, err = require_admin()
     if err:
         return err
     ok = delete_transaction(user["id"], tx_id)
@@ -843,7 +915,7 @@ def api_add_debt():
 
 @app.route("/api/debts/<int:debt_id>", methods=["PUT"])
 def api_update_debt(debt_id):
-    user, err = require_registered()
+    user, err = require_admin()
     if err:
         return err
 
@@ -879,7 +951,7 @@ def api_update_debt(debt_id):
 
 @app.route("/api/debts/<int:debt_id>", methods=["DELETE"])
 def api_delete_debt(debt_id):
-    user, err = require_registered()
+    user, err = require_admin()
     if err:
         return err
     ok = delete_debt(user["id"], debt_id)
