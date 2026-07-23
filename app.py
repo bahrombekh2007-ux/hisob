@@ -30,11 +30,9 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-BOT_USERNAME = os.environ.get("BOT_USERNAME", "")  # masalan: mening_hisobchi_bot (@ belgisiz)
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-# Faqat shu Telegram ID'ga ega foydalanuvchi tahrirlash/o'chirish va admin
-# panelidan foydalana oladi. Bo'sh qoldirilsa, hech kim admin bo'lmaydi.
 try:
     ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 except ValueError:
@@ -44,18 +42,32 @@ app = Flask(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Ma'lumotlar bazasi
+# Ma'lumotlar bazasi - Render internal database uchun SSL O'CHIRILGAN
 # ---------------------------------------------------------------------------
 def get_conn():
-    """Har chaqiriqda yangi ulanish - Render internal database uchun SSL o'chirilgan."""
-    try:
-        # Avval SSL bilan ulanishga harakat qilamiz
-        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-        return conn
-    except Exception:
-        # Agar SSL ishlamasa, SSLsiz ulanish
-        conn = psycopg2.connect(DATABASE_URL)
-        return conn
+    """Render internal database uchun ulanish - SSL talab qilinmaydi."""
+    # Internal database URL ni to'g'rilash
+    db_url = DATABASE_URL
+    # Agar URL da sslmode bo'lsa, uni olib tashlaymiz
+    if 'sslmode' in db_url:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(db_url)
+        # Query params dan sslmode ni olib tashlaymiz
+        query_params = urllib.parse.parse_qs(parsed.query)
+        query_params.pop('sslmode', None)
+        new_query = urllib.parse.urlencode(query_params, doseq=True)
+        db_url = urllib.parse.urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            new_query,
+            parsed.fragment
+        ))
+    
+    # SSLsiz ulanish
+    conn = psycopg2.connect(db_url)
+    return conn
 
 
 def init_db():
@@ -97,9 +109,6 @@ def init_db():
             paid_at TIMESTAMP
         )
     """)
-    # Eski (avvalroq yaratilgan) jadvallarda is_payment ustuni bo'lmasligi
-    # mumkin — CREATE TABLE IF NOT EXISTS uni qo'shmaydi, shuning uchun
-    # mavjud bo'lmasa qo'shib qo'yamiz (xavfsiz, ma'lumotlarni o'chirmaydi).
     cur.execute("ALTER TABLE debts ADD COLUMN IF NOT EXISTS is_payment BOOLEAN DEFAULT FALSE")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_debts_user ON debts(telegram_id)")
     conn.commit()
@@ -206,9 +215,6 @@ def update_transaction(telegram_id, tx_id, type_, amount, category, note):
 
 
 def get_admin_stats():
-    """Admin panel uchun umumiy statistika: jami foydalanuvchilar,
-    jami yozuvlar soni, shu oy bo'yicha barcha foydalanuvchilarning
-    umumiy kirim/xarajati va so'nggi ro'yxatdan o'tganlar ro'yxati."""
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
@@ -252,9 +258,6 @@ def get_admin_stats():
 
 
 def get_monthly_summary(telegram_id):
-    """Joriy oy (UTC bo'yicha) uchun kirim/xarajat yig'indisi va xarajat
-    kategoriyalari bo'yicha taqsimotni qaytaradi. Bot orqali "Oylik hisobot"
-    tugmasi bosilganda ishlatiladi."""
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("""
@@ -392,8 +395,6 @@ BRAND_RED = "FF4757"
 
 
 def _monthly_breakdown(transactions):
-    """Tranzaksiyalarni oy bo'yicha guruhlab, har oy uchun kirim/xarajat/
-    balansni hisoblaydi (eng yangi oy birinchi)."""
     months = {}
     for t in transactions:
         d = t["created_at"]
@@ -429,7 +430,6 @@ def generate_excel_report(telegram_id, display_name):
         for i, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
 
-    # --- 1-bet: Oylik xulosa ---
     ws1 = wb.active
     ws1.title = "Oylik xulosa"
     ws1["A1"] = "Hisobchi — Moliyaviy hisobot"
@@ -455,7 +455,6 @@ def generate_excel_report(telegram_id, display_name):
 
     autosize(ws1, [22, 18, 18, 18])
 
-    # --- 2-bet: Barcha tranzaksiyalar ---
     ws2 = wb.create_sheet("Tranzaksiyalar")
     headers2 = ["Sana", "Turi", "Summa (so'm)", "Kategoriya", "Izoh"]
     ws2.append(headers2)
@@ -478,7 +477,6 @@ def generate_excel_report(telegram_id, display_name):
 
     autosize(ws2, [18, 12, 16, 20, 30])
 
-    # --- 3-bet: Qarz daftari ---
     ws3 = wb.create_sheet("Qarz daftari")
     headers3 = ["Ism", "Yo'nalish", "Summa (so'm)", "Holat", "Sana", "Izoh"]
     ws3.append(headers3)
@@ -648,11 +646,8 @@ def generate_pdf_report(telegram_id, display_name):
 
 # ---------------------------------------------------------------------------
 # Telegram WebApp initData tekshiruvi
-# https://core.telegram.org/bots/webapps#validating-data-received-via-the-web-app
 # ---------------------------------------------------------------------------
 def verify_init_data(init_data: str):
-    """initData imzosini tekshiradi. To'g'ri bo'lsa (dict user, ...) qaytaradi,
-    noto'g'ri yoki bo'sh bo'lsa None qaytaradi."""
     if not init_data or not BOT_TOKEN:
         return None
     try:
@@ -689,8 +684,6 @@ def verify_init_data(init_data: str):
 
 
 def require_auth():
-    """Har bir API so'rovi uchun: initData -> telegram user.
-    Qaytaradi: (user_dict, None) yoki (None, (response, status))"""
     init_data = request.headers.get("X-Telegram-Init-Data", "")
     user = verify_init_data(init_data)
     if user is None:
@@ -699,7 +692,6 @@ def require_auth():
 
 
 def require_registered():
-    """initData to'g'ri VA foydalanuvchi botda ro'yxatdan o'tgan bo'lishi kerak."""
     user, err = require_auth()
     if err:
         return None, err
@@ -717,9 +709,6 @@ def is_admin_user(telegram_id):
 
 
 def require_admin():
-    """Tahrirlash/o'chirish va admin panel faqat ADMIN_ID uchun ochiq.
-    Oddiy (admin bo'lmagan) ro'yxatdan o'tgan foydalanuvchilar ma'lumot
-    qo'sha oladi va ko'ra oladi, lekin tahrirlay yoki o'chira olmaydi."""
     user, err = require_registered()
     if err:
         return None, err
@@ -731,13 +720,9 @@ def require_admin():
 
 
 # ---------------------------------------------------------------------------
-# Sahifalar
+# Sahifalar va API
 # ---------------------------------------------------------------------------
 def to_utc_iso(dt):
-    """PostgreSQL NOW() qiymati UTC bo'yicha saqlanadi, lekin "timezone
-    yo'q" (naive) holatda qaytadi. Bu funksiya ISO satr oxiriga aniq "Z"
-    (UTC) belgisini qo'shadi — shunda brauzer sanani noto'g'ri (o'zining
-    mahalliy vaqti deb) talqin qilib, kunni siljitib yubormaydi."""
     return dt.isoformat() + "Z"
 
 
@@ -746,9 +731,6 @@ def index():
     return render_template("index.html", bot_username=BOT_USERNAME)
 
 
-# ---------------------------------------------------------------------------
-# API
-# ---------------------------------------------------------------------------
 @app.route("/api/me")
 def api_me():
     user, err = require_auth()
@@ -930,7 +912,6 @@ def api_update_debt(debt_id):
 
     data = request.get_json(silent=True) or {}
 
-    # Faqat "to'landi" holatini almashtirish so'ralgan bo'lishi mumkin
     if "is_paid" in data and len(data) == 1:
         row = set_debt_paid(user["id"], debt_id, bool(data["is_paid"]))
         return jsonify(serialize_debt(row))
@@ -972,10 +953,6 @@ BOT_TOKEN_ENV = os.environ.get("BOT_TOKEN", "")
 
 
 def send_telegram_document(chat_id, filename, file_bytes, caption=""):
-    """Faylni Telegram Bot API orqali to'g'ridan-to'g'ri foydalanuvchi
-    chatiga yuboradi. Telegram ichidagi brauzer (WebView) orqali fayl
-    yuklab olish ko'p qurilmalarda ishlamay qolishi mumkin — shuning
-    uchun fayl brauzerga emas, bevosita bot chatiga jo'natiladi."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN_ENV}/sendDocument"
     files = {"document": (filename, file_bytes)}
     data = {"chat_id": chat_id, "caption": caption}
@@ -989,10 +966,6 @@ def send_telegram_document(chat_id, filename, file_bytes, caption=""):
 
 @app.route("/api/export/send", methods=["POST"])
 def api_export_send():
-    """Hisobotni (Excel yoki PDF) yaratib, to'g'ridan-to'g'ri foydalanuvchi
-    bilan botning chatiga jo'natadi. Frontend endi faylni brauzerda
-    yuklab olishga urinmaydi (bu Telegram WebView'da ishonchsiz) —
-    o'rniga shu endpointni chaqirib, natijani bot chatidan kutadi."""
     user, err = require_registered()
     if err:
         return err
