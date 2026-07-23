@@ -1,0 +1,2416 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Hisobchi</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg: #0a0e27;
+            --card: #131837;
+            --text: #e8e9f3;
+            --text2: #8b8fa8;
+            --green: #00d4aa;
+            --red: #ff4757;
+            --blue: #5b6af0;
+            --purple: #a855f7;
+            --orange: #f97316;
+            --border: #1e2348;
+            --input-bg: #0d1130;
+            --radius: 20px;
+            --shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 0 0 130px 0;
+            -webkit-font-smoothing: antialiased;
+            letter-spacing: -0.2px;
+        }
+
+        .container {
+            max-width: 420px;
+            margin: 0 auto;
+            padding: 24px 16px;
+        }
+
+        /* ---------- Yuklanish / qulf ekranlari ---------- */
+        .gate-screen {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 32px;
+            z-index: 999;
+            gap: 18px;
+        }
+
+        .gate-screen.hidden { display: none; }
+
+        .gate-spinner {
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            border: 3px solid var(--border);
+            border-top-color: var(--blue);
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .gate-icon {
+            width: 64px;
+            height: 64px;
+            border-radius: 20px;
+            background: rgba(91, 106, 240, 0.12);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--blue);
+        }
+
+        .gate-icon svg {
+            width: 30px;
+            height: 30px;
+        }
+
+        .gate-title {
+            font-size: 1.05rem;
+            font-weight: 800;
+            color: #ffffff;
+        }
+
+        .gate-text {
+            font-size: 0.85rem;
+            color: var(--text2);
+            max-width: 300px;
+            line-height: 1.5;
+        }
+
+        .gate-btn {
+            margin-top: 6px;
+            padding: 13px 26px;
+            background: var(--blue);
+            color: #fff;
+            border: none;
+            border-radius: 14px;
+            font-weight: 700;
+            font-size: 0.9rem;
+            cursor: pointer;
+            box-shadow: 0 8px 20px rgba(91, 106, 240, 0.3);
+        }
+
+        .gate-btn:active { transform: scale(0.97); opacity: 0.9; }
+
+        #app-root { display: none; }
+        #app-root.ready { display: block; }
+
+        /* ---------- Sarlavha ---------- */
+        .greeting-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 14px;
+            padding: 0 4px;
+        }
+
+        .greeting-text {
+            font-size: 0.85rem;
+            color: var(--text2);
+            font-weight: 500;
+        }
+
+        .greeting-name {
+            color: #ffffff;
+            font-weight: 700;
+        }
+
+        .phone-badge {
+            font-size: 0.68rem;
+            color: var(--text2);
+            background: rgba(255,255,255,0.05);
+            padding: 4px 9px;
+            border-radius: 8px;
+        }
+
+        /* Balans kartasi */
+        .balance-card {
+            background: linear-gradient(145deg, #1a1f4e, #0f1335);
+            border: 1px solid var(--border);
+            border-radius: 28px;
+            padding: 28px 24px;
+            margin-bottom: 20px;
+            box-shadow: var(--shadow);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .balance-card::before {
+            content: '';
+            position: absolute;
+            top: -40px;
+            right: -40px;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: rgba(91, 106, 240, 0.08);
+        }
+
+        .balance-card::after {
+            content: '';
+            position: absolute;
+            bottom: -30px;
+            left: -30px;
+            width: 90px;
+            height: 90px;
+            border-radius: 50%;
+            background: rgba(0, 212, 170, 0.06);
+        }
+
+        .balance-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.25em;
+            color: var(--text2);
+            margin-bottom: 6px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .balance-row {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .balance-value {
+            font-size: 2.8rem;
+            font-weight: 800;
+            letter-spacing: -1px;
+            color: #ffffff;
+        }
+
+        .balance-currency {
+            font-size: 0.9rem;
+            color: var(--text2);
+            font-weight: 500;
+        }
+
+        .stats-row {
+            display: flex;
+            gap: 10px;
+            margin-top: 18px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .stat-box {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 14px;
+            padding: 12px;
+        }
+
+        .stat-title {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: var(--text2);
+            margin-bottom: 4px;
+        }
+
+        .stat-amount {
+            font-size: 1.1rem;
+            font-weight: 700;
+        }
+
+        .stat-amount.green { color: var(--green); }
+        .stat-amount.red { color: var(--red); }
+
+        /* Sarlavhalar */
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            padding: 0 4px;
+        }
+
+        .section-title {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .section-badge {
+            font-size: 0.7rem;
+            color: var(--text2);
+            background: rgba(255,255,255,0.05);
+            padding: 4px 10px;
+            border-radius: 10px;
+        }
+
+        /* Kartalar */
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 18px;
+            margin-bottom: 18px;
+            box-shadow: var(--shadow);
+        }
+
+        /* Xarajatlar ko'rinishi */
+        .expense-summary {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .expense-bar-item {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .expense-bar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .expense-bar-name {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #e2e2f0;
+        }
+
+        .expense-bar-amount {
+            font-size: 0.8rem;
+            color: var(--text2);
+            font-weight: 500;
+        }
+
+        .expense-bar-track {
+            width: 100%;
+            height: 6px;
+            background: rgba(255,255,255,0.04);
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .expense-bar-fill {
+            height: 100%;
+            border-radius: 6px;
+            transition: width 0.8s ease;
+        }
+
+        .total-expense-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: 10px;
+            border-top: 1px solid var(--border);
+            margin-top: 4px;
+        }
+
+        .total-expense-label {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .total-expense-value {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--red);
+        }
+
+        /* Form */
+        .form-type-badge {
+            display: inline-block;
+            padding: 6px 14px;
+            border-radius: 10px;
+            font-weight: 700;
+            font-size: 0.8rem;
+            letter-spacing: 0.5px;
+            margin-bottom: 16px;
+        }
+
+        .form-type-badge.income-badge {
+            background: rgba(0, 212, 170, 0.15);
+            color: var(--green);
+        }
+
+        .form-type-badge.expense-badge {
+            background: rgba(255, 71, 87, 0.15);
+            color: var(--red);
+        }
+
+        .field-group {
+            margin-bottom: 14px;
+        }
+
+        .field-label {
+            display: block;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text2);
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+
+        .field-input {
+            width: 100%;
+            padding: 13px 14px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            color: #ffffff;
+            font-size: 0.95rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            outline: none;
+        }
+
+        .field-input:focus {
+            border-color: var(--blue);
+            box-shadow: 0 0 0 3px rgba(91, 106, 240, 0.1);
+        }
+
+        .field-input::placeholder {
+            color: #3a3f66;
+        }
+
+        .submit-btn {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 14px;
+            color: #ffffff;
+            font-size: 0.95rem;
+            font-weight: 700;
+            cursor: pointer;
+            letter-spacing: 0.3px;
+            transition: all 0.2s;
+            margin-top: 4px;
+        }
+
+        .submit-btn.income-submit {
+            background: var(--green);
+            box-shadow: 0 8px 20px rgba(0, 212, 170, 0.25);
+        }
+
+        .submit-btn.expense-submit {
+            background: var(--red);
+            box-shadow: 0 8px 20px rgba(255, 71, 87, 0.25);
+        }
+
+        .submit-btn:active {
+            transform: scale(0.97);
+            opacity: 0.9;
+        }
+
+        /* Tranzaksiyalar */
+        .tx-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .tx-item:last-child {
+            border-bottom: none;
+        }
+
+        .tx-icon-box {
+            width: 38px;
+            height: 38px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.1rem;
+            flex-shrink: 0;
+            font-weight: 700;
+        }
+
+        .tx-icon-box.income-box {
+            background: rgba(0, 212, 170, 0.12);
+            color: var(--green);
+        }
+
+        .tx-icon-box.expense-box {
+            background: rgba(255, 71, 87, 0.12);
+            color: var(--red);
+        }
+
+        .tx-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .tx-desc {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: #ffffff;
+            margin-bottom: 1px;
+        }
+
+        .tx-date {
+            font-size: 0.7rem;
+            color: var(--text2);
+        }
+
+        .tx-note-small {
+            font-size: 0.7rem;
+            color: #5a5f7a;
+            font-style: italic;
+        }
+
+        .tx-sum {
+            font-weight: 700;
+            font-size: 0.95rem;
+            flex-shrink: 0;
+            letter-spacing: -0.3px;
+        }
+
+        .tx-sum.green { color: var(--green); }
+        .tx-sum.red { color: var(--red); }
+        .tx-sum.blue-text { color: var(--blue); }
+
+        .tx-actions {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            flex-shrink: 0;
+        }
+
+        .tx-icon-btn {
+            background: none;
+            border: none;
+            color: #5a5f7a;
+            font-size: 0.95rem;
+            cursor: pointer;
+            padding: 7px;
+            border-radius: 8px;
+            transition: all 0.15s;
+            line-height: 1;
+        }
+
+        .tx-icon-btn.edit-btn:active {
+            background: rgba(91, 106, 240, 0.15);
+            color: var(--blue);
+        }
+
+        .tx-icon-btn.delete-btn:active {
+            background: rgba(255, 71, 87, 0.15);
+            color: var(--red);
+        }
+
+        /* Kunlik kirim guruhi — bosilganda ochiladi/yopiladi */
+        .daily-income-header {
+            cursor: pointer;
+        }
+
+        .daily-income-chevron {
+            font-size: 0.7rem;
+            color: var(--text2);
+            transition: transform 0.2s;
+            flex-shrink: 0;
+        }
+
+        .daily-income-header.expanded .daily-income-chevron {
+            transform: rotate(180deg);
+        }
+
+        .daily-income-details {
+            padding-left: 12px;
+            border-left: 2px solid var(--border);
+            margin: 0 0 6px 19px;
+        }
+
+        .daily-income-details .tx-item {
+            padding: 9px 0;
+        }
+
+        /* Tahrirlash modali */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            z-index: 500;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+        }
+
+        .modal-overlay.show {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .modal-sheet {
+            width: 100%;
+            max-width: 420px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 24px 24px 0 0;
+            padding: 22px 18px 28px;
+            transform: translateY(20px);
+            transition: transform 0.2s;
+        }
+
+        .modal-overlay.show .modal-sheet {
+            transform: translateY(0);
+        }
+
+        .modal-title {
+            font-size: 1rem;
+            font-weight: 800;
+            color: #ffffff;
+            margin-bottom: 16px;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 6px;
+        }
+
+        .modal-actions .submit-btn {
+            margin-top: 0;
+        }
+
+        .modal-cancel-btn {
+            flex: 1;
+            padding: 14px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: transparent;
+            color: var(--text2);
+            font-weight: 700;
+            font-size: 0.95rem;
+            cursor: pointer;
+        }
+
+        /* Qarz daftari */
+        .debt-type-toggle {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            background: var(--input-bg);
+            border-radius: 14px;
+            padding: 4px;
+        }
+
+        .debt-type-btn {
+            flex: 1;
+            padding: 11px 6px;
+            border: none;
+            border-radius: 11px;
+            background: transparent;
+            color: var(--text2);
+            font-weight: 700;
+            font-size: 0.78rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .debt-type-btn.active[data-direction="given"] {
+            background: rgba(0, 212, 170, 0.18);
+            color: var(--green);
+        }
+
+        .debt-type-btn.active[data-direction="taken"] {
+            background: rgba(255, 71, 87, 0.18);
+            color: var(--red);
+        }
+
+        .debt-entry-btn {
+            flex: 1;
+            padding: 9px 6px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: transparent;
+            color: var(--text2);
+            font-weight: 600;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .debt-entry-btn.active {
+            background: rgba(91, 106, 240, 0.15);
+            color: var(--blue);
+            border-color: rgba(91, 106, 240, 0.4);
+        }
+
+        .search-input-wrap {
+            position: relative;
+        }
+
+        .search-input-icon {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 17px;
+            height: 17px;
+            color: var(--text2);
+            pointer-events: none;
+        }
+
+        .search-input-icon svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .search-input {
+            padding-left: 40px !important;
+        }
+
+        .debt-payment-tag {
+            font-size: 0.65rem;
+            font-weight: 700;
+            color: var(--blue);
+            background: rgba(91, 106, 240, 0.15);
+            padding: 2px 7px;
+            border-radius: 6px;
+            margin-left: 6px;
+        }
+
+        .debt-summary-row {
+            display: flex;
+            gap: 10px;
+        }
+
+        .debt-summary-box {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 14px;
+            padding: 14px;
+            text-align: center;
+        }
+
+        .debt-summary-title {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text2);
+            margin-bottom: 6px;
+        }
+
+        .debt-summary-value {
+            font-size: 1.15rem;
+            font-weight: 800;
+        }
+
+        .debt-item.debt-paid {
+            opacity: 0.45;
+        }
+
+        .debt-item.debt-paid .tx-desc {
+            text-decoration: line-through;
+        }
+
+        .debt-paid-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--input-bg);
+            color: var(--text2);
+            font-size: 0.9rem;
+            font-weight: 700;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+
+        .debt-item.debt-paid .debt-paid-btn {
+            background: rgba(0, 212, 170, 0.15);
+            color: var(--green);
+            border-color: transparent;
+        }
+
+        /* Excel/PDF yuklab olish */
+        .export-row {
+            display: flex;
+            gap: 10px;
+        }
+
+        .export-btn {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            padding: 18px 10px;
+            background: var(--input-bg);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            color: #ffffff;
+            font-weight: 700;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .export-btn:active {
+            transform: scale(0.97);
+            background: rgba(91, 106, 240, 0.1);
+        }
+
+        .export-btn-icon {
+            width: 26px;
+            height: 26px;
+            display: flex;
+        }
+
+        .export-btn-icon svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .export-btn.loading {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+
+        .export-hint {
+            margin-top: 12px;
+            font-size: 0.72rem;
+            color: var(--text2);
+            text-align: center;
+        }
+
+        /* Pastki navigatsiya */
+        .bottom-nav {
+            position: fixed;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 22px;
+            display: flex;
+            padding: 3px;
+            z-index: 100;
+            box-shadow: var(--shadow);
+            width: calc(100% - 32px);
+            max-width: 420px;
+        }
+
+        .nav-btn {
+            flex: 1;
+            background: none;
+            border: none;
+            color: var(--text2);
+            padding: 10px 4px;
+            border-radius: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 600;
+            font-size: 0.58rem;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            min-width: 0;
+        }
+
+        .nav-btn.active {
+            background: rgba(91, 106, 240, 0.15);
+            color: #ffffff;
+        }
+
+        .nav-symbol {
+            width: 21px;
+            height: 21px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .nav-symbol svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .nav-btn.add-income-btn {
+            background: rgba(0, 212, 170, 0.18);
+            color: var(--green);
+            margin: -6px 2px;
+            padding: 14px 4px;
+            border-radius: 18px;
+        }
+
+        .nav-btn.add-expense-btn {
+            background: rgba(255, 71, 87, 0.18);
+            color: var(--red);
+            margin: -6px 2px;
+            padding: 14px 4px;
+            border-radius: 18px;
+        }
+
+        .nav-btn.add-income-btn .nav-symbol,
+        .nav-btn.add-expense-btn .nav-symbol {
+            width: 26px;
+            height: 26px;
+        }
+
+        /* Umumiy SVG ikonka o'lchamlari */
+        .icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 18px;
+            height: 18px;
+            flex-shrink: 0;
+        }
+
+        .icon svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Oylik hisobot */
+        .month-item {
+            padding: 14px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .month-item:last-child {
+            border-bottom: none;
+        }
+
+        .month-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .month-name {
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: #ffffff;
+            text-transform: capitalize;
+        }
+
+        .month-balance {
+            font-size: 0.95rem;
+            font-weight: 800;
+            letter-spacing: -0.3px;
+        }
+
+        .month-balance.green { color: var(--green); }
+        .month-balance.red { color: var(--red); }
+
+        .month-stats {
+            display: flex;
+            gap: 14px;
+        }
+
+        .month-stat {
+            font-size: 0.78rem;
+            font-weight: 600;
+        }
+
+        .month-stat.green { color: var(--green); }
+        .month-stat.red { color: var(--red); }
+
+        /* Sahifalar */
+        .view {
+            display: none;
+            animation: fadeUp 0.25s ease;
+        }
+
+        .view.active {
+            display: block;
+        }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(14px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Bo'sh holat */
+        .empty-box {
+            text-align: center;
+            padding: 30px 16px;
+            color: var(--text2);
+        }
+
+        .empty-text {
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        /* Bildirish */
+        .toast {
+            position: fixed;
+            bottom: 120px;
+            left: 50%;
+            transform: translateX(-50%) translateY(80px);
+            background: var(--card);
+            color: #ffffff;
+            padding: 10px 22px;
+            border-radius: 28px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border);
+            z-index: 200;
+            transition: all 0.3s;
+            opacity: 0;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Yuklanish ekrani -->
+    <div class="gate-screen" id="gateLoading">
+        <div class="gate-spinner"></div>
+        <div class="gate-text">tekshirilmoqda...</div>
+    </div>
+
+    <!-- Telegram tashqarisida ochilgan holat -->
+    <div class="gate-screen hidden" id="gateNoTelegram">
+        <div class="gate-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+        <div class="gate-title">Faqat Telegram orqali</div>
+        <div class="gate-text">Bu ilova faqat Hisobchi Telegram boti ichidan ochiladi.</div>
+        <button class="gate-btn" id="openBotFromNoTg">Botga o'tish</button>
+    </div>
+
+    <!-- Ro'yxatdan o'tmagan holat -->
+    <div class="gate-screen hidden" id="gateNotRegistered">
+        <div class="gate-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg></div>
+        <div class="gate-title">Avval ro'yxatdan o'ting</div>
+        <div class="gate-text">Hisobchidan foydalanish uchun botda telefon raqamingizni tasdiqlashingiz kerak.</div>
+        <button class="gate-btn" id="openBotFromNotReg">Botga o'tish</button>
+    </div>
+
+    <!-- Ulanish xatosi -->
+    <div class="gate-screen hidden" id="gateError">
+        <div class="gate-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div class="gate-title">Xatolik yuz berdi</div>
+        <div class="gate-text" id="gateErrorText">Serverga ulanib bo'lmadi. Qayta urinib ko'ring.</div>
+        <button class="gate-btn" id="retryBtn">Qayta urinish</button>
+    </div>
+
+    <!-- Asosiy ilova -->
+    <div id="app-root">
+    <div class="container">
+
+        <div class="greeting-row">
+            <div class="greeting-text">Salom, <span class="greeting-name" id="userName">foydalanuvchi</span></div>
+            <div class="phone-badge" id="userPhone"></div>
+        </div>
+
+        <!-- Balans sarlavhasi -->
+        <div class="balance-card">
+            <div class="balance-label">joriy balans</div>
+            <div class="balance-row">
+                <span class="balance-value" id="balanceVal">0</span>
+                <span class="balance-currency">so'm</span>
+            </div>
+            <div class="stats-row">
+                <div class="stat-box">
+                    <div class="stat-title">+ shu oy kirim</div>
+                    <div class="stat-amount green" id="monthIncome">0</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-title">− shu oy xarajat</div>
+                    <div class="stat-amount red" id="monthExpense">0</div>
+                </div>
+            </div>
+        </div>
+
+        <main>
+            <!-- Asosiy sahifa -->
+            <section class="view active" id="view-dashboard">
+                <div class="section-header">
+                    <h2 class="section-title">kunlik kirimlar</h2>
+                </div>
+                <div class="card" id="dailyIncomeCard">
+                    <div class="empty-box">
+                        <div class="empty-text">hali kirim kiritilmagan</div>
+                    </div>
+                </div>
+
+                <div class="section-header" style="margin-top: 4px;">
+                    <h2 class="section-title">xarajatlar taqsimoti</h2>
+                    <span class="section-badge" id="totalExpenseBadge">0 so'm</span>
+                </div>
+                <div class="card" id="expenseBreakdownCard">
+                    <div class="empty-box">
+                        <div class="empty-text">hali xarajat kiritilmagan</div>
+                    </div>
+                </div>
+
+                <div class="section-header" style="margin-top: 4px;">
+                    <h2 class="section-title">so'nggi xarajatlar</h2>
+                </div>
+                <div class="card" id="recentCard">
+                    <div class="empty-box">
+                        <div class="empty-text">hali hech narsa yozilmadi</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Kirim qo'shish sahifasi -->
+            <section class="view" id="view-add-income">
+                <div class="section-header">
+                    <h2 class="section-title">+ kirim qo'shish</h2>
+                </div>
+                <div class="card">
+                    <span class="form-type-badge income-badge">+ KIRIM</span>
+
+                    <div class="field-group">
+                        <label class="field-label">summa (so'm)</label>
+                        <input type="text" class="field-input money-input" id="incomeAmount" placeholder="50 000" inputmode="numeric">
+                    </div>
+
+                    <button class="submit-btn income-submit" id="incomeSubmitBtn">+ kirimni saqlash</button>
+                </div>
+            </section>
+
+            <!-- Xarajat qo'shish sahifasi -->
+            <section class="view" id="view-add-expense">
+                <div class="section-header">
+                    <h2 class="section-title">− xarajat qo'shish</h2>
+                </div>
+                <div class="card">
+                    <span class="form-type-badge expense-badge">− XARAJAT</span>
+
+                    <div class="field-group">
+                        <label class="field-label">summa (so'm)</label>
+                        <input type="text" class="field-input money-input" id="expenseAmount" placeholder="50 000" inputmode="numeric">
+                    </div>
+
+                    <div class="field-group">
+                        <label class="field-label">nimaga sarflandi</label>
+                        <input type="text" class="field-input" id="expenseCategory" placeholder="masalan: bozor, yo'lkira, kiyim..." maxlength="100">
+                    </div>
+
+                    <div class="field-group">
+                        <label class="field-label">izoh (ixtiyoriy)</label>
+                        <input type="text" class="field-input" id="expenseNote" placeholder="qo'shimcha izoh..." maxlength="200">
+                    </div>
+
+                    <button class="submit-btn expense-submit" id="expenseSubmitBtn">− xarajatni saqlash</button>
+                </div>
+            </section>
+
+            <!-- Oylik hisobot sahifasi -->
+            <section class="view" id="view-monthly">
+                <div class="section-header">
+                    <h2 class="section-title">oylik hisobot</h2>
+                </div>
+                <div class="card" id="monthlyCard">
+                    <div class="empty-box">
+                        <div class="empty-text">hali ma'lumot yo'q</div>
+                    </div>
+                </div>
+
+                <div class="section-header" style="margin-top: 4px;">
+                    <h2 class="section-title">hisobotni olish</h2>
+                </div>
+                <div class="card">
+                    <div class="export-row">
+                        <button class="export-btn" id="exportExcelBtn">
+                            <span class="export-btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg></span>
+                            <span>Excel</span>
+                        </button>
+                        <button class="export-btn" id="exportPdfBtn">
+                            <span class="export-btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="12" y2="16"/></svg></span>
+                            <span>PDF</span>
+                        </button>
+                    </div>
+                    <div class="export-hint">Bosilsa, hisobot fayli to'g'ridan-to'g'ri botga yuboriladi</div>
+                </div>
+            </section>
+
+            <!-- Qarz daftari sahifasi -->
+            <section class="view" id="view-debts">
+                <div class="section-header">
+                    <h2 class="section-title">qarz daftari</h2>
+                </div>
+                <div class="card" id="debtSummaryCard">
+                    <div class="empty-box">
+                        <div class="empty-text">hali qarz yo'q</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="debt-type-toggle">
+                        <button type="button" class="debt-type-btn active" data-direction="given" id="debtGivenBtn">Menga qarzdor</button>
+                        <button type="button" class="debt-type-btn" data-direction="taken" id="debtTakenBtn">Men qarzdorman</button>
+                    </div>
+
+                    <div class="debt-type-toggle" style="margin-top: 8px;">
+                        <button type="button" class="debt-entry-btn active" data-entry="debt" id="debtEntryDebtBtn">Yangi qarz</button>
+                        <button type="button" class="debt-entry-btn" data-entry="payment" id="debtEntryPaymentBtn">To'lov qildi</button>
+                    </div>
+
+                    <div class="field-group" style="margin-top: 14px;">
+                        <label class="field-label">ism</label>
+                        <input type="text" class="field-input" id="debtPersonName" placeholder="masalan: Aziz" maxlength="100">
+                    </div>
+
+                    <div class="field-group">
+                        <label class="field-label">summa (so'm)</label>
+                        <input type="text" class="field-input money-input" id="debtAmount" placeholder="100 000" inputmode="numeric">
+                    </div>
+
+                    <div class="field-group">
+                        <label class="field-label">izoh (ixtiyoriy)</label>
+                        <input type="text" class="field-input" id="debtNote" placeholder="nima uchun..." maxlength="200">
+                    </div>
+
+                    <button class="submit-btn" id="debtSubmitBtn" style="background: var(--blue); box-shadow: 0 8px 20px rgba(91, 106, 240, 0.25);">+ qo'shish</button>
+                </div>
+
+                <div class="field-group" style="margin-top: 4px;">
+                    <div class="search-input-wrap">
+                        <span class="search-input-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+                        <input type="text" class="field-input search-input" id="debtSearchInput" placeholder="ism bo'yicha qidirish...">
+                    </div>
+                </div>
+
+                <div class="section-header" style="margin-top: 4px;">
+                    <h2 class="section-title">menga qarzdorlar</h2>
+                    <span class="section-badge" id="debtGivenBadge">0 so'm</span>
+                </div>
+                <div class="card" id="debtGivenCard">
+                    <div class="empty-box">
+                        <div class="empty-text">hali qarz yo'q</div>
+                    </div>
+                </div>
+
+                <div class="section-header" style="margin-top: 4px;">
+                    <h2 class="section-title">men qarzdorman</h2>
+                    <span class="section-badge" id="debtTakenBadge">0 so'm</span>
+                </div>
+                <div class="card" id="debtTakenCard">
+                    <div class="empty-box">
+                        <div class="empty-text">hali qarz yo'q</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Tarix sahifasi -->
+            <section class="view" id="view-history">
+                <div class="section-header">
+                    <h2 class="section-title">tarix</h2>
+                    <span class="section-badge" id="totalCount">0 ta</span>
+                </div>
+                <div class="card" id="historyCard">
+                    <div class="empty-box">
+                        <div class="empty-text">hali hech narsa yozilmadi</div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <!-- Tahrirlash modali -->
+    <div class="modal-overlay" id="editModalOverlay">
+        <div class="modal-sheet">
+            <div class="modal-title" id="editModalTitle">Tahrirlash</div>
+
+            <div class="field-group">
+                <label class="field-label">summa (so'm)</label>
+                <input type="text" class="field-input money-input" id="editAmount" inputmode="numeric">
+            </div>
+
+            <div class="field-group" id="editCategoryGroup">
+                <label class="field-label">nimaga sarflandi</label>
+                <input type="text" class="field-input" id="editCategory" maxlength="100">
+            </div>
+
+            <div class="field-group">
+                <label class="field-label">izoh (ixtiyoriy)</label>
+                <input type="text" class="field-input" id="editNote" maxlength="200">
+            </div>
+
+            <div class="modal-actions">
+                <button class="submit-btn" id="editSaveBtn" style="background: var(--blue); box-shadow: 0 8px 20px rgba(91, 106, 240, 0.25);">saqlash</button>
+            </div>
+            <div class="modal-actions">
+                <button class="modal-cancel-btn" id="editCancelBtn">bekor qilish</button>
+                <button class="modal-cancel-btn" id="editDeleteBtn" style="color: var(--red); border-color: rgba(255,71,87,0.3);">o'chirish</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Qarzni tahrirlash modali -->
+    <div class="modal-overlay" id="debtEditModalOverlay">
+        <div class="modal-sheet">
+            <div class="modal-title">Qarzni tahrirlash</div>
+
+            <div class="field-group">
+                <label class="field-label">ism</label>
+                <input type="text" class="field-input" id="debtEditPersonName" maxlength="100">
+            </div>
+
+            <div class="field-group">
+                <label class="field-label">summa (so'm)</label>
+                <input type="text" class="field-input money-input" id="debtEditAmount" inputmode="numeric">
+            </div>
+
+            <div class="field-group">
+                <label class="field-label">izoh (ixtiyoriy)</label>
+                <input type="text" class="field-input" id="debtEditNote" maxlength="200">
+            </div>
+
+            <div class="modal-actions">
+                <button class="submit-btn" id="debtEditSaveBtn" style="background: var(--blue); box-shadow: 0 8px 20px rgba(91, 106, 240, 0.25);">saqlash</button>
+            </div>
+            <div class="modal-actions">
+                <button class="modal-cancel-btn" id="debtEditCancelBtn">bekor qilish</button>
+                <button class="modal-cancel-btn" id="debtEditDeleteBtn" style="color: var(--red); border-color: rgba(255,71,87,0.3);">o'chirish</button>
+            </div>
+        </div>
+    </div>
+
+    <nav class="bottom-nav">
+        <button class="nav-btn active" data-view="dashboard">
+            <span class="nav-symbol"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>
+            asosiy
+        </button>
+        <button class="nav-btn add-income-btn" data-view="add-income">
+            <span class="nav-symbol"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span>
+            kirim
+        </button>
+        <button class="nav-btn add-expense-btn" data-view="add-expense">
+            <span class="nav-symbol"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg></span>
+            xarajat
+        </button>
+        <button class="nav-btn" data-view="monthly">
+            <span class="nav-symbol"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></span>
+            oylik
+        </button>
+        <button class="nav-btn" data-view="debts">
+            <span class="nav-symbol"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
+            qarz
+        </button>
+        <button class="nav-btn" data-view="history">
+            <span class="nav-symbol"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>
+            tarix
+        </button>
+    </nav>
+    </div><!-- /app-root -->
+
+
+    <script>
+        const BOT_USERNAME = {{ bot_username | tojson }};
+        const tg = window.Telegram?.WebApp;
+        if (tg) {
+            tg.ready();
+            tg.expand();
+            tg.setHeaderColor('#0a0e27');
+            tg.setBackgroundColor('#0a0e27');
+        }
+
+        let transactions = [];
+
+        const $ = (s) => document.querySelector(s);
+        const $$ = (s) => document.querySelectorAll(s);
+
+        // O'zimiz chizgan SVG ikonkalar to'plami (emoji ishlatilmaydi —
+        // shunda barcha qurilma va ilovalarda bir xil, tiniq ko'rinadi).
+        // Har biri currentColor'dan foydalanadi, shuning uchun joylashgan
+        // joyning rangini avtomatik oladi.
+        const ICONS = {
+            grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
+            plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+            minus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+            calendar: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
+            users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+            list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
+            edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+            trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>',
+            check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+            undo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 4 3 10 9 10"/></svg>',
+            chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>',
+            arrowUp: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
+            arrowDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>',
+            person: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+            fileSpreadsheet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>',
+            fileText: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="12" y2="16"/></svg>',
+            send: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>',
+        };
+
+        function icon(name, extraClass) {
+            return `<span class="icon ${extraClass || ''}">${ICONS[name]}</span>`;
+        }
+
+        // Pul kiritish maydonlari uchun: foydalanuvchi yozayotganda avtomatik
+        // har 3 xonadan keyin probel qo'yiladi (masalan "30000" -> "30 000").
+        // parseMoneyInput probellarni olib tashlab, haqiqiy sonni qaytaradi.
+        function parseMoneyInput(value) {
+            const digits = (value || '').toString().replace(/\D/g, '');
+            return digits ? parseFloat(digits) : NaN;
+        }
+
+        function formatMoneyLive(value) {
+            const digits = (value || '').replace(/\D/g, '');
+            if (!digits) return '';
+            return parseInt(digits, 10).toLocaleString('uz-UZ').replace(/,/g, ' ');
+        }
+
+        function attachMoneyFormatting() {
+            document.querySelectorAll('.money-input').forEach(input => {
+                if (input.dataset.moneyBound) return;
+                input.dataset.moneyBound = '1';
+                input.addEventListener('input', () => {
+                    const cursorFromEnd = input.value.length - input.selectionStart;
+                    input.value = formatMoneyLive(input.value);
+                    const pos = Math.max(0, input.value.length - cursorFromEnd);
+                    input.setSelectionRange(pos, pos);
+                });
+            });
+        }
+
+        function fmt(n) {
+            return Math.round(n).toLocaleString('uz-UZ').replace(/,/g, ' ');
+        }
+
+        function showToast(msg) {
+            const t = $('#toast');
+            t.textContent = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2000);
+        }
+
+        function initData() {
+            return tg?.initData || '';
+        }
+
+        function openBot() {
+            const link = 'https://t.me/' + BOT_USERNAME;
+            if (tg?.openTelegramLink) {
+                tg.openTelegramLink(link);
+            } else {
+                window.open(link, '_blank');
+            }
+        }
+
+        $('#openBotFromNoTg').addEventListener('click', openBot);
+        $('#openBotFromNotReg').addEventListener('click', openBot);
+        $('#retryBtn').addEventListener('click', () => checkAccess());
+
+        function showGate(id) {
+            ['gateLoading', 'gateNoTelegram', 'gateNotRegistered', 'gateError'].forEach(g => {
+                $('#' + g).classList.toggle('hidden', g !== id);
+            });
+            $('#app-root').classList.remove('ready');
+        }
+
+        async function api(path, options = {}) {
+            const headers = { 'Content-Type': 'application/json', ...options.headers };
+            headers['X-Telegram-Init-Data'] = initData();
+            const res = await fetch(path, { ...options, headers });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                const e = new Error(err.error || res.statusText);
+                e.status = res.status;
+                throw e;
+            }
+            return res.json();
+        }
+
+        async function checkAccess() {
+            showGate('gateLoading');
+
+            if (!tg || !initData()) {
+                showGate('gateNoTelegram');
+                return;
+            }
+
+            try {
+                const me = await api('/api/me');
+                if (!me.registered) {
+                    showGate('gateNotRegistered');
+                    return;
+                }
+
+                $('#userName').textContent = me.first_name || tg.initDataUnsafe?.user?.first_name || 'foydalanuvchi';
+                if (me.phone) {
+                    const p = me.phone.toString();
+                    $('#userPhone').textContent = '•••' + p.slice(-4);
+                }
+
+                document.querySelectorAll('.gate-screen').forEach(g => g.classList.add('hidden'));
+                $('#app-root').classList.add('ready');
+
+                await loadTransactions();
+                await loadDebts();
+            } catch (e) {
+                $('#gateErrorText').textContent = e.message || "Serverga ulanib bo'lmadi";
+                showGate('gateError');
+            }
+        }
+
+        // Navigatsiya
+        $$('.nav-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const viewName = btn.dataset.view;
+                if (!viewName) return;
+
+                $$('.nav-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+
+                $$('.view').forEach(v => v.classList.remove('active'));
+                $(`#view-${viewName}`).classList.add('active');
+
+                if (tg?.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+            });
+        });
+
+        // Kirim saqlash
+        $('#incomeSubmitBtn').addEventListener('click', async () => {
+            const amount = parseMoneyInput($('#incomeAmount').value);
+
+            if (!amount || amount <= 0) {
+                showToast('summani kiriting');
+                return;
+            }
+
+            try {
+                await api('/api/transactions', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        type: 'income',
+                        amount,
+                        category: 'kirim',
+                        note: ''
+                    })
+                });
+
+                $('#incomeAmount').value = '';
+
+                showToast('kirim qo\'shildi');
+                if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+
+                await loadTransactions();
+            } catch (e) {
+                showToast('xatolik: ' + e.message);
+            }
+        });
+
+        // Xarajat saqlash
+        $('#expenseSubmitBtn').addEventListener('click', async () => {
+            const amount = parseMoneyInput($('#expenseAmount').value);
+            const category = $('#expenseCategory').value.trim();
+            const note = $('#expenseNote').value.trim();
+
+            if (!amount || amount <= 0) {
+                showToast('summani kiriting');
+                return;
+            }
+            if (!category) {
+                showToast('nimaga sarflanganini yozing');
+                return;
+            }
+
+            try {
+                await api('/api/transactions', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        type: 'expense',
+                        amount,
+                        category,
+                        note
+                    })
+                });
+
+                $('#expenseAmount').value = '';
+                $('#expenseCategory').value = '';
+                $('#expenseNote').value = '';
+
+                showToast('xarajat qo\'shildi');
+                if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+
+                await loadTransactions();
+            } catch (e) {
+                showToast('xatolik: ' + e.message);
+            }
+        });
+
+        // Barcha yozuvlarni oy bo'yicha guruhlab, har oy uchun kirim/xarajat/
+        // balansni hisoblaydi (mahalliy vaqt bo'yicha oy hisoblanadi).
+        const UZ_MONTHS = [
+            'yanvar', 'fevral', 'mart', 'aprel', 'may', 'iyun',
+            'iyul', 'avgust', 'sentyabr', 'oktyabr', 'noyabr', 'dekabr'
+        ];
+
+        function groupByMonth(txs) {
+            const groups = {};
+            txs.forEach(t => {
+                const d = new Date(t.created_at);
+                const key = d.getFullYear() + '-' + d.getMonth();
+                if (!groups[key]) {
+                    groups[key] = {
+                        year: d.getFullYear(),
+                        month: d.getMonth(),
+                        income: 0,
+                        expense: 0,
+                        sortKey: d.getFullYear() * 12 + d.getMonth(),
+                    };
+                }
+                if (t.type === 'income') {
+                    groups[key].income += t.amount;
+                } else {
+                    groups[key].expense += t.amount;
+                }
+            });
+            return Object.values(groups).sort((a, b) => b.sortKey - a.sortKey);
+        }
+
+        function renderMonthly() {
+            const el = $('#monthlyCard');
+            const months = groupByMonth(transactions);
+
+            if (months.length === 0) {
+                el.innerHTML = '<div class="empty-box"><div class="empty-text">hali ma\'lumot yo\'q</div></div>';
+                return;
+            }
+
+            el.innerHTML = months.map(m => {
+                const balance = m.income - m.expense;
+                const balCls = balance >= 0 ? 'green' : 'red';
+                const monthLabel = UZ_MONTHS[m.month] + ' ' + m.year;
+                return `
+                    <div class="month-item">
+                        <div class="month-header">
+                            <span class="month-name">${monthLabel}</span>
+                            <span class="month-balance ${balCls}">${balance >= 0 ? '+' : '−'}${fmt(Math.abs(balance))} so'm</span>
+                        </div>
+                        <div class="month-stats">
+                            <span class="month-stat green">+${fmt(m.income)} kirim</span>
+                            <span class="month-stat red">−${fmt(m.expense)} xarajat</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Tranzaksiyalarni yuklash
+        async function loadTransactions() {
+            try {
+                transactions = await api('/api/transactions');
+            } catch (e) {
+                transactions = [];
+            }
+            renderDashboard();
+            renderHistory();
+            renderMonthly();
+        }
+
+        function isThisMonth(iso) {
+            const d = new Date(iso);
+            const now = new Date();
+            return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+        }
+
+        // Bir xil kunda qo'shilgan bir nechta kirimni bitta "kunlik kirim"
+        // qatoriga birlashtiradi (mahalliy vaqt bo'yicha kun hisoblanadi).
+        function groupIncomeByDay(txs) {
+            const groups = {};
+            txs.forEach(t => {
+                if (t.type !== 'income') return;
+                const d = new Date(t.created_at);
+                const key = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+                if (!groups[key]) {
+                    groups[key] = { key, total: 0, count: 0, latest: t.created_at, dateObj: d, items: [] };
+                }
+                groups[key].total += t.amount;
+                groups[key].count += 1;
+                groups[key].items.push(t);
+                if (new Date(t.created_at) > new Date(groups[key].latest)) {
+                    groups[key].latest = t.created_at;
+                    groups[key].dateObj = d;
+                }
+            });
+            return Object.values(groups).sort((a, b) => new Date(b.latest) - new Date(a.latest));
+        }
+
+        function escapeAttr(s) {
+            return (s || '').toString()
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        // Bitta "kunlik kirim" qatorini (bosilganda ichidagi har bir kirim
+        // ochiladigan/yopiladigan qilib) HTML qilib chiqaradi. `prefix` — bir
+        // xil kun ikkita joyda (asosiy va tarix) chiqsa, id'lar to'qnashmasligi
+        // uchun kerak.
+        function renderDailyIncomeGroupHTML(g, prefix) {
+            const dateStr = g.dateObj.toLocaleDateString('uz-UZ', { day: '2-digit', month: 'short', year: 'numeric' });
+            const uniqueKey = prefix + '-' + g.key;
+
+            const itemsHTML = g.items
+                .slice()
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                .map(t => {
+                    const timeStr = new Date(t.created_at).toLocaleTimeString('uz-UZ', { hour: '2-digit', minute: '2-digit' });
+                    return `
+                        <div class="tx-item">
+                            <div class="tx-icon-box income-box">${icon('arrowUp')}</div>
+                            <div class="tx-info">
+                                <div class="tx-desc">Kirim</div>
+                                <div class="tx-date">${timeStr}${t.note ? '<span class="tx-note-small"> · ' + t.note + '</span>' : ''}</div>
+                            </div>
+                            <div class="tx-sum green">+${fmt(t.amount)}</div>
+                            <div class="tx-actions">
+                                <button class="tx-icon-btn edit-btn" data-id="${t.id}" data-type="income" data-amount="${t.amount}" data-category="" data-note="${escapeAttr(t.note)}">${icon('edit')}</button>
+                                <button class="tx-icon-btn delete-btn" data-id="${t.id}">${icon('trash')}</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+            return `
+                <div class="daily-income-header tx-item" data-key="${uniqueKey}">
+                    <div class="tx-icon-box income-box">${icon('arrowUp')}</div>
+                    <div class="tx-info">
+                        <div class="tx-desc">Kunlik kirim</div>
+                        <div class="tx-date">${dateStr}${g.count > 1 ? ' · ' + g.count + ' ta kirim' : ''}</div>
+                    </div>
+                    <div class="tx-sum green">+${fmt(g.total)}</div>
+                    <span class="daily-income-chevron">${icon('chevronDown')}</span>
+                </div>
+                <div class="daily-income-details" id="daily-details-${uniqueKey}" style="display:none;">
+                    ${itemsHTML}
+                </div>
+            `;
+        }
+
+        function renderDailyIncomeCard(elementId, limit) {
+            const el = $('#' + elementId);
+            let groups = groupIncomeByDay(transactions);
+            if (limit) groups = groups.slice(0, limit);
+
+            if (groups.length === 0) {
+                el.innerHTML = '<div class="empty-box"><div class="empty-text">hali kirim kiritilmagan</div></div>';
+                return;
+            }
+
+            el.innerHTML = groups.map(g => renderDailyIncomeGroupHTML(g, elementId)).join('');
+        }
+
+        // Ranglar palitrasi
+        const barColors = [
+            '#ff4757', '#ff6b81', '#ff6348', '#e84118',
+            '#c0392b', '#cf6679', '#b71540', '#eb3b5a'
+        ];
+
+        function renderDashboard() {
+            let totalIncome = 0,
+                totalExpense = 0,
+                monthIncome = 0,
+                monthExpense = 0;
+            const catTotals = {};
+
+            transactions.forEach(t => {
+                if (t.type === 'income') {
+                    totalIncome += t.amount;
+                    if (isThisMonth(t.created_at)) monthIncome += t.amount;
+                } else {
+                    totalExpense += t.amount;
+                    if (isThisMonth(t.created_at)) {
+                        monthExpense += t.amount;
+                        catTotals[t.category] = (catTotals[t.category] || 0) + t.amount;
+                    }
+                }
+            });
+
+            $('#balanceVal').textContent = fmt(totalIncome - totalExpense);
+            $('#monthIncome').textContent = fmt(monthIncome);
+            $('#monthExpense').textContent = fmt(monthExpense);
+            $('#totalExpenseBadge').textContent = fmt(monthExpense) + " so'm";
+
+            // Xarajatlar taqsimoti
+            const breakdownCard = $('#expenseBreakdownCard');
+            const entries = Object.entries(catTotals).sort((a, b) => b[1] - a[1]);
+            const total = entries.reduce((s, [, v]) => s + v, 0);
+
+            if (total === 0) {
+                breakdownCard.innerHTML = '<div class="empty-box"><div class="empty-text">hali xarajat kiritilmagan</div></div>';
+            } else {
+                let html = '<div class="expense-summary">';
+
+                entries.forEach(([cat, val], i) => {
+                    const pct = Math.round(val / total * 100);
+                    const color = barColors[i % barColors.length];
+                    html += `
+                        <div class="expense-bar-item">
+                            <div class="expense-bar-header">
+                                <span class="expense-bar-name">${cat}</span>
+                                <span class="expense-bar-amount">${fmt(val)} so'm · ${pct}%</span>
+                            </div>
+                            <div class="expense-bar-track">
+                                <div class="expense-bar-fill" style="width: 0%; background: ${color};" data-width="${pct}%"></div>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                html += `
+                        <div class="total-expense-row">
+                            <span class="total-expense-label">jami xarajat</span>
+                            <span class="total-expense-value">−${fmt(total)} so'm</span>
+                        </div>
+                    </div>
+                `;
+
+                breakdownCard.innerHTML = html;
+
+                // Animatsiya
+                setTimeout(() => {
+                    breakdownCard.querySelectorAll('.expense-bar-fill').forEach(bar => {
+                        bar.style.width = bar.dataset.width;
+                    });
+                }, 50);
+            }
+
+            // Kunlik kirimlar (alohida bo'lim)
+            renderDailyIncomeCard('dailyIncomeCard', 5);
+
+            // So'nggi xarajatlar
+            const recentCard = $('#recentCard');
+            const recentExpenses = transactions.filter(t => t.type === 'expense').slice(0, 6);
+            if (recentExpenses.length === 0) {
+                recentCard.innerHTML = '<div class="empty-box"><div class="empty-text">hali xarajat yozilmadi</div></div>';
+            } else {
+                recentCard.innerHTML = recentExpenses.map(t => createTxHTML(t, false)).join('');
+            }
+        }
+
+        function createTxHTML(t, showActions) {
+            const date = new Date(t.created_at);
+            const dateStr = date.toLocaleDateString('uz-UZ', { day: '2-digit', month: 'short', year: 'numeric' });
+            const sign = t.type === 'income' ? '+' : '−';
+            const cls = t.type === 'income' ? 'green' : 'red';
+            const boxCls = t.type === 'income' ? 'income-box' : 'expense-box';
+            const boxIcon = t.type === 'income' ? icon('arrowUp') : icon('arrowDown');
+            const desc = t.type === 'income' ? 'Kirim' : t.category;
+
+            const actionsHTML = showActions ? `
+                <div class="tx-actions">
+                    <button class="tx-icon-btn edit-btn" data-id="${t.id}" data-type="${t.type}" data-amount="${t.amount}" data-category="${escapeAttr(t.category)}" data-note="${escapeAttr(t.note)}">${icon('edit')}</button>
+                    <button class="tx-icon-btn delete-btn" data-id="${t.id}">${icon('trash')}</button>
+                </div>
+            ` : '';
+
+            return `
+                <div class="tx-item">
+                    <div class="tx-icon-box ${boxCls}">${boxIcon}</div>
+                    <div class="tx-info">
+                        <div class="tx-desc">${desc}</div>
+                        <div class="tx-date">${dateStr}${t.note ? '<span class="tx-note-small"> · ' + t.note + '</span>' : ''}</div>
+                    </div>
+                    <div class="tx-sum ${cls}">${sign}${fmt(t.amount)}</div>
+                    ${actionsHTML}
+                </div>
+            `;
+        }
+
+        function renderHistory() {
+            const historyCard = $('#historyCard');
+
+            if (transactions.length === 0) {
+                historyCard.innerHTML = '<div class="empty-box"><div class="empty-text">hali hech narsa yozilmadi</div></div>';
+                $('#totalCount').textContent = '0 ta';
+                return;
+            }
+
+            const incomeGroups = groupIncomeByDay(transactions);
+            const expenseItems = transactions.filter(t => t.type === 'expense');
+
+            const monthMap = {};
+            function ensureMonth(d) {
+                const key = d.getFullYear() + '-' + d.getMonth();
+                if (!monthMap[key]) {
+                    monthMap[key] = {
+                        year: d.getFullYear(), month: d.getMonth(),
+                        income: 0, expense: 0, items: [],
+                        sortKey: d.getFullYear() * 12 + d.getMonth(),
+                    };
+                }
+                return monthMap[key];
+            }
+
+            incomeGroups.forEach(g => {
+                const m = ensureMonth(g.dateObj);
+                m.income += g.total;
+                m.items.push({ kind: 'income-day', sortDate: new Date(g.latest), data: g });
+            });
+
+            expenseItems.forEach(t => {
+                const d = new Date(t.created_at);
+                const m = ensureMonth(d);
+                m.expense += t.amount;
+                m.items.push({ kind: 'expense', sortDate: d, data: t });
+            });
+
+            const months = Object.values(monthMap).sort((a, b) => b.sortKey - a.sortKey);
+            months.forEach(m => m.items.sort((a, b) => b.sortDate - a.sortDate));
+
+            let totalCount = 0;
+            let html = '';
+
+            months.forEach(m => {
+                const balance = m.income - m.expense;
+                const balCls = balance >= 0 ? 'green' : 'red';
+                const monthLabel = UZ_MONTHS[m.month] + ' ' + m.year;
+
+                html += `
+                    <div class="month-item">
+                        <div class="month-header">
+                            <span class="month-name">${monthLabel}</span>
+                            <span class="month-balance ${balCls}">${balance >= 0 ? '+' : '−'}${fmt(Math.abs(balance))} so'm</span>
+                        </div>
+                        <div class="month-stats">
+                            <span class="month-stat green">+${fmt(m.income)} kirim</span>
+                            <span class="month-stat red">−${fmt(m.expense)} xarajat</span>
+                        </div>
+                    </div>
+                `;
+
+                m.items.forEach(item => {
+                    totalCount++;
+                    if (item.kind === 'income-day') {
+                        html += renderDailyIncomeGroupHTML(item.data, 'hist');
+                    } else {
+                        html += createTxHTML(item.data, true);
+                    }
+                });
+            });
+
+            historyCard.innerHTML = html;
+            $('#totalCount').textContent = totalCount + ' ta';
+        }
+
+        // Kunlik kirim qatorini ochish/yopish va tahrirlash/o'chirish
+        // tugmalarini bosishni bitta joyda ushlaymiz (dinamik chiqadigan
+        // barcha elementlar uchun ishlaydi).
+        $('#app-root').addEventListener('click', (e) => {
+            const editBtn = e.target.closest('.tx-icon-btn.edit-btn');
+            if (editBtn) {
+                e.stopPropagation();
+                openEditModal(editBtn.dataset);
+                return;
+            }
+
+            const delBtn = e.target.closest('.tx-icon-btn.delete-btn');
+            if (delBtn) {
+                e.stopPropagation();
+                deleteTransactionConfirm(delBtn.dataset.id);
+                return;
+            }
+
+            const header = e.target.closest('.daily-income-header');
+            if (header) {
+                const key = header.dataset.key;
+                const details = document.getElementById('daily-details-' + key);
+                if (details) {
+                    const isOpen = details.style.display !== 'none';
+                    details.style.display = isOpen ? 'none' : 'block';
+                    header.classList.toggle('expanded', !isOpen);
+                }
+            }
+        });
+
+        async function deleteTransactionConfirm(id) {
+            if (!confirm("ushbu yozuvni o'chirishni xohlaysizmi?")) return;
+            try {
+                await api('/api/transactions/' + id, { method: 'DELETE' });
+                if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('warning');
+                showToast("yozuv o'chirildi");
+                await loadTransactions();
+            } catch (e) {
+                showToast("o'chirib bo'lmadi");
+            }
+        }
+
+        // Tahrirlash modali
+        let editingId = null;
+        let editingType = null;
+
+        function openEditModal(dataset) {
+            editingId = dataset.id;
+            editingType = dataset.type;
+            $('#editAmount').value = formatMoneyLive(String(dataset.amount));
+            $('#editCategory').value = dataset.category || '';
+            $('#editNote').value = dataset.note || '';
+            $('#editCategoryGroup').style.display = dataset.type === 'expense' ? 'block' : 'none';
+            $('#editModalTitle').textContent = dataset.type === 'income' ? 'Kirimni tahrirlash' : 'Xarajatni tahrirlash';
+            $('#editModalOverlay').classList.add('show');
+        }
+
+        function closeEditModal() {
+            $('#editModalOverlay').classList.remove('show');
+            editingId = null;
+            editingType = null;
+        }
+
+        $('#editModalOverlay').addEventListener('click', (e) => {
+            if (e.target.id === 'editModalOverlay') closeEditModal();
+        });
+
+        $('#editCancelBtn').addEventListener('click', closeEditModal);
+
+        $('#editSaveBtn').addEventListener('click', async () => {
+            const amount = parseMoneyInput($('#editAmount').value);
+            const category = $('#editCategory').value.trim();
+            const note = $('#editNote').value.trim();
+
+            if (!amount || amount <= 0) {
+                showToast('summani kiriting');
+                return;
+            }
+            if (editingType === 'expense' && !category) {
+                showToast('kategoriya kerak');
+                return;
+            }
+
+            try {
+                await api('/api/transactions/' + editingId, {
+                    method: 'PUT',
+                    body: JSON.stringify({
+                        type: editingType,
+                        amount,
+                        category: editingType === 'expense' ? category : 'kirim',
+                        note,
+                    })
+                });
+                if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+                showToast('yangilandi');
+                closeEditModal();
+                await loadTransactions();
+            } catch (e) {
+                showToast('xatolik: ' + e.message);
+            }
+        });
+
+        $('#editDeleteBtn').addEventListener('click', async () => {
+            if (!editingId) return;
+            if (!confirm("o'chirishni xohlaysizmi?")) return;
+            try {
+                await api('/api/transactions/' + editingId, { method: 'DELETE' });
+                showToast("o'chirildi");
+                closeEditModal();
+                await loadTransactions();
+            } catch (e) {
+                showToast("o'chirib bo'lmadi");
+            }
+        });
+
+        // ============================================================
+        // Qarz daftari
+        // ============================================================
+        let debts = [];
+        let selectedDebtDirection = 'given';
+        let selectedDebtEntry = 'debt'; // 'debt' | 'payment'
+        let debtSearchQuery = '';
+
+        async function loadDebts() {
+            try {
+                debts = await api('/api/debts');
+            } catch (e) {
+                debts = [];
+            }
+            renderDebts();
+        }
+
+        // Bir xil odamga tegishli bir nechta qarz/to'lov yozuvini bitta
+        // qatorga birlashtiradi (ism katta-kichik harfiga qaramasdan).
+        // Masalan: Oybekka 100 000 qarz, keyin Oybek "30 000 to'lov qildi"
+        // deb yozilsa — sof qarzi avtomatik 70 000 ga tushadi.
+        function groupDebtsByPerson(list) {
+            const groups = {};
+            list.forEach(d => {
+                const key = d.direction + '|' + d.person_name.trim().toLowerCase();
+                if (!groups[key]) {
+                    groups[key] = {
+                        key, direction: d.direction, person_name: d.person_name,
+                        items: [], totalDebt: 0, totalPaidMarked: 0, totalPayment: 0,
+                        latest: d.created_at,
+                    };
+                }
+                const g = groups[key];
+                g.items.push(d);
+                if (d.is_payment) {
+                    g.totalPayment += d.amount;
+                } else if (d.is_paid) {
+                    g.totalPaidMarked += d.amount;
+                } else {
+                    g.totalDebt += d.amount;
+                }
+                if (new Date(d.created_at) > new Date(g.latest)) {
+                    g.latest = d.created_at;
+                    g.person_name = d.person_name; // eng oxirgi yozuvdagi yozilishi
+                }
+            });
+
+            return Object.values(groups).map(g => {
+                const net = g.totalDebt - g.totalPayment;
+                g.netBalance = net > 0 ? net : 0;
+                g.isSettled = g.netBalance === 0 && (g.totalDebt > 0 || g.totalPaidMarked > 0);
+                return g;
+            }).sort((a, b) => new Date(b.latest) - new Date(a.latest));
+        }
+
+        function renderDebtGroupHTML(g, uniqueKey) {
+            const cls = g.direction === 'given' ? 'green' : 'red';
+            const boxCls = g.direction === 'given' ? 'income-box' : 'expense-box';
+            const countLabel = g.items.length > 1 ? ` · ${g.items.length} ta yozuv` : '';
+            const statusLabel = g.isSettled ? "to'langan" : 'qarzdor';
+            const displayAmount = g.isSettled ? (g.totalDebt || g.totalPaidMarked) : g.netBalance;
+
+            const itemsHTML = g.items
+                .slice()
+                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                .map(d => {
+                    const dateStr = new Date(d.created_at).toLocaleDateString('uz-UZ', { day: '2-digit', month: 'short', year: 'numeric' });
+                    const sign = d.is_payment ? '−' : '+';
+                    const amountCls = d.is_payment ? 'blue-text' : cls;
+                    const paidBtnHTML = d.is_payment ? '' : `<button class="debt-paid-btn" data-id="${d.id}" data-paid="${d.is_paid ? '0' : '1'}" title="${d.is_paid ? 'qaytadan ochish' : "to'landi deb belgilash"}">${d.is_paid ? icon('undo') : icon('check')}</button>`;
+                    return `
+                        <div class="tx-item debt-item ${d.is_paid ? 'debt-paid' : ''}">
+                            <div class="tx-icon-box ${boxCls}">${icon('person')}</div>
+                            <div class="tx-info">
+                                <div class="tx-desc">${dateStr}${d.is_payment ? '<span class="debt-payment-tag">to\'lov</span>' : ''}</div>
+                                <div class="tx-date">${d.note ? escapeAttr(d.note) : "izohsiz"}</div>
+                            </div>
+                            <div class="tx-sum ${amountCls}">${sign}${fmt(d.amount)}</div>
+                            <div class="tx-actions">
+                                ${paidBtnHTML}
+                                <button class="tx-icon-btn edit-btn debt-edit-btn" data-id="${d.id}" data-person="${escapeAttr(d.person_name)}" data-amount="${d.amount}" data-note="${escapeAttr(d.note)}">${icon('edit')}</button>
+                                <button class="tx-icon-btn delete-btn debt-delete-btn" data-id="${d.id}">${icon('trash')}</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+            return `
+                <div class="daily-income-header tx-item ${g.isSettled ? 'debt-paid' : ''}" data-key="${uniqueKey}">
+                    <div class="tx-icon-box ${boxCls}">${icon('person')}</div>
+                    <div class="tx-info">
+                        <div class="tx-desc">${escapeAttr(g.person_name)}</div>
+                        <div class="tx-date">${statusLabel}${countLabel}</div>
+                    </div>
+                    <div class="tx-sum ${cls}">${fmt(displayAmount)}</div>
+                    <span class="daily-income-chevron">${icon('chevronDown')}</span>
+                </div>
+                <div class="daily-income-details" id="daily-details-${uniqueKey}" style="display:none;">
+                    ${itemsHTML}
+                </div>
+            `;
+        }
+
+        function renderDebts() {
+            const given = debts.filter(d => d.direction === 'given');
+            const taken = debts.filter(d => d.direction === 'taken');
+
+            const givenGroups = groupDebtsByPerson(given);
+            const takenGroups = groupDebtsByPerson(taken);
+
+            const givenNetTotal = givenGroups.reduce((s, g) => s + g.netBalance, 0);
+            const takenNetTotal = takenGroups.reduce((s, g) => s + g.netBalance, 0);
+
+            // Umumiy balans karta
+            const summaryCard = $('#debtSummaryCard');
+            if (debts.length === 0) {
+                summaryCard.innerHTML = '<div class="empty-box"><div class="empty-text">hali qarz yo\'q</div></div>';
+            } else {
+                const net = givenNetTotal - takenNetTotal;
+                const netCls = net >= 0 ? 'green' : 'red';
+                summaryCard.innerHTML = `
+                    <div class="debt-summary-row">
+                        <div class="debt-summary-box">
+                            <div class="debt-summary-title">menga qarzdor</div>
+                            <div class="debt-summary-value green">+${fmt(givenNetTotal)}</div>
+                        </div>
+                        <div class="debt-summary-box">
+                            <div class="debt-summary-title">men qarzdorman</div>
+                            <div class="debt-summary-value red">−${fmt(takenNetTotal)}</div>
+                        </div>
+                    </div>
+                    <div class="total-expense-row">
+                        <span class="total-expense-label">sof balans</span>
+                        <span class="total-expense-value ${netCls}" style="color: var(--${net >= 0 ? 'green' : 'red'});">${net >= 0 ? '+' : '−'}${fmt(Math.abs(net))} so'm</span>
+                    </div>
+                `;
+            }
+
+            $('#debtGivenBadge').textContent = fmt(givenNetTotal) + " so'm";
+            $('#debtTakenBadge').textContent = fmt(takenNetTotal) + " so'm";
+
+            // Qidiruv filtri (katta-kichik harf farqisiz)
+            const q = debtSearchQuery.trim().toLowerCase();
+            const filteredGiven = q ? givenGroups.filter(g => g.person_name.toLowerCase().includes(q)) : givenGroups;
+            const filteredTaken = q ? takenGroups.filter(g => g.person_name.toLowerCase().includes(q)) : takenGroups;
+
+            const givenCard = $('#debtGivenCard');
+            givenCard.innerHTML = filteredGiven.length === 0
+                ? `<div class="empty-box"><div class="empty-text">${q ? 'hech kim topilmadi' : "hali qarz yo'q"}</div></div>`
+                : filteredGiven.map((g, i) => renderDebtGroupHTML(g, 'given-' + i)).join('');
+
+            const takenCard = $('#debtTakenCard');
+            takenCard.innerHTML = filteredTaken.length === 0
+                ? `<div class="empty-box"><div class="empty-text">${q ? 'hech kim topilmadi' : "hali qarz yo'q"}</div></div>`
+                : filteredTaken.map((g, i) => renderDebtGroupHTML(g, 'taken-' + i)).join('');
+        }
+
+        $('#debtSearchInput').addEventListener('input', (e) => {
+            debtSearchQuery = e.target.value;
+            renderDebts();
+        });
+
+        // Yo'nalish tanlash (Menga qarzdor / Men qarzdorman)
+        $('#debtGivenBtn').addEventListener('click', () => {
+            selectedDebtDirection = 'given';
+            $('#debtGivenBtn').classList.add('active');
+            $('#debtTakenBtn').classList.remove('active');
+        });
+
+        $('#debtTakenBtn').addEventListener('click', () => {
+            selectedDebtDirection = 'taken';
+            $('#debtTakenBtn').classList.add('active');
+            $('#debtGivenBtn').classList.remove('active');
+        });
+
+        // Yozuv turi tanlash (Yangi qarz / To'lov qildi)
+        $('#debtEntryDebtBtn').addEventListener('click', () => {
+            selectedDebtEntry = 'debt';
+            $('#debtEntryDebtBtn').classList.add('active');
+            $('#debtEntryPaymentBtn').classList.remove('active');
+            $('#debtSubmitBtn').textContent = "+ qo'shish";
+        });
+
+        $('#debtEntryPaymentBtn').addEventListener('click', () => {
+            selectedDebtEntry = 'payment';
+            $('#debtEntryPaymentBtn').classList.add('active');
+            $('#debtEntryDebtBtn').classList.remove('active');
+            $('#debtSubmitBtn').textContent = "to'lovni saqlash";
+        });
+
+        // Yangi qarz / to'lov qo'shish
+        $('#debtSubmitBtn').addEventListener('click', async () => {
+            const personName = $('#debtPersonName').value.trim();
+            const amount = parseMoneyInput($('#debtAmount').value);
+            const note = $('#debtNote').value.trim();
+
+            if (!personName) {
+                showToast('ismni kiriting');
+                return;
+            }
+            if (!amount || amount <= 0) {
+                showToast('summani kiriting');
+                return;
+            }
+
+            try {
+                await api('/api/debts', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        direction: selectedDebtDirection,
+                        person_name: personName,
+                        amount,
+                        note,
+                        is_payment: selectedDebtEntry === 'payment',
+                    })
+                });
+
+                $('#debtPersonName').value = '';
+                $('#debtAmount').value = '';
+                $('#debtNote').value = '';
+
+                showToast(selectedDebtEntry === 'payment' ? "to'lov qo'shildi" : "qarz qo'shildi");
+                if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+
+                await loadDebts();
+            } catch (e) {
+                showToast('xatolik: ' + e.message);
+            }
+        });
+
+        // Qarz qatoridagi tugmalar: to'landi belgilash / tahrirlash / o'chirish
+        let editingDebtId = null;
+
+        function openDebtEditModal(dataset) {
+            editingDebtId = dataset.id;
+            $('#debtEditPersonName').value = dataset.person || '';
+            $('#debtEditAmount').value = formatMoneyLive(String(dataset.amount || ''));
+            $('#debtEditNote').value = dataset.note || '';
+            $('#debtEditModalOverlay').classList.add('show');
+        }
+
+        function closeDebtEditModal() {
+            $('#debtEditModalOverlay').classList.remove('show');
+            editingDebtId = null;
+        }
+
+        document.querySelectorAll('#view-debts').forEach(section => {
+            section.addEventListener('click', async (e) => {
+                const paidBtn = e.target.closest('.debt-paid-btn');
+                if (paidBtn) {
+                    e.stopPropagation();
+                    try {
+                        await api('/api/debts/' + paidBtn.dataset.id, {
+                            method: 'PUT',
+                            body: JSON.stringify({ is_paid: paidBtn.dataset.paid === '1' })
+                        });
+                        if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+                        await loadDebts();
+                    } catch (e) {
+                        showToast('xatolik yuz berdi');
+                    }
+                    return;
+                }
+
+                const editBtn = e.target.closest('.debt-edit-btn');
+                if (editBtn) {
+                    e.stopPropagation();
+                    openDebtEditModal(editBtn.dataset);
+                    return;
+                }
+
+                const delBtn = e.target.closest('.debt-delete-btn');
+                if (delBtn) {
+                    e.stopPropagation();
+                    if (!confirm("ushbu qarz yozuvini o'chirishni xohlaysizmi?")) return;
+                    try {
+                        await api('/api/debts/' + delBtn.dataset.id, { method: 'DELETE' });
+                        if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('warning');
+                        showToast("o'chirildi");
+                        await loadDebts();
+                    } catch (e) {
+                        showToast("o'chirib bo'lmadi");
+                    }
+                    return;
+                }
+            });
+        });
+
+        $('#debtEditModalOverlay').addEventListener('click', (e) => {
+            if (e.target.id === 'debtEditModalOverlay') closeDebtEditModal();
+        });
+
+        $('#debtEditCancelBtn').addEventListener('click', closeDebtEditModal);
+
+        $('#debtEditSaveBtn').addEventListener('click', async () => {
+            const personName = $('#debtEditPersonName').value.trim();
+            const amount = parseMoneyInput($('#debtEditAmount').value);
+            const note = $('#debtEditNote').value.trim();
+
+            if (!personName) {
+                showToast('ismni kiriting');
+                return;
+            }
+            if (!amount || amount <= 0) {
+                showToast('summani kiriting');
+                return;
+            }
+
+            try {
+                await api('/api/debts/' + editingDebtId, {
+                    method: 'PUT',
+                    body: JSON.stringify({ person_name: personName, amount, note })
+                });
+                showToast('yangilandi');
+                closeDebtEditModal();
+                await loadDebts();
+            } catch (e) {
+                showToast('xatolik: ' + e.message);
+            }
+        });
+
+        $('#debtEditDeleteBtn').addEventListener('click', async () => {
+            if (!editingDebtId) return;
+            if (!confirm("o'chirishni xohlaysizmi?")) return;
+            try {
+                await api('/api/debts/' + editingDebtId, { method: 'DELETE' });
+                showToast("o'chirildi");
+                closeDebtEditModal();
+                await loadDebts();
+            } catch (e) {
+                showToast("o'chirib bo'lmadi");
+            }
+        });
+
+        // Excel / PDF hisobotni bevosita botga jo'natish. Telegram ichidagi
+        // brauzer (WebView) orqali faylni "yuklab olish" ko'p qurilmalarda
+        // sukut bilan ishlamay qoladi — shuning uchun fayl brauzerga emas,
+        // to'g'ridan-to'g'ri bot chatiga yuboriladi.
+        async function sendReportToBot(format, btn) {
+            btn.classList.add('loading');
+            try {
+                await api('/api/export/send', {
+                    method: 'POST',
+                    body: JSON.stringify({ format })
+                });
+                if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+                showToast('hisobot botga yuborildi');
+            } catch (e) {
+                showToast('xatolik: ' + e.message);
+            } finally {
+                btn.classList.remove('loading');
+            }
+        }
+
+        $('#exportExcelBtn').addEventListener('click', () => {
+            sendReportToBot('excel', $('#exportExcelBtn'));
+        });
+
+        $('#exportPdfBtn').addEventListener('click', () => {
+            sendReportToBot('pdf', $('#exportPdfBtn'));
+        });
+
+        // Boshlash
+        attachMoneyFormatting();
+        checkAccess();
+    </script>
+</body>
+</html>
