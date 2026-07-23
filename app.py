@@ -45,25 +45,19 @@ app = Flask(__name__)
 # Ma'lumotlar bazasi - Render internal database uchun SSL O'CHIRILGAN
 # ---------------------------------------------------------------------------
 def get_conn():
-    """Render internal database uchun ulanish - SSL talab qilinmaydi."""
-    # Internal database URL ni to'g'rilash
+    """Render internal database uchun ulanish - SSL O'CHIRILGAN."""
+    import urllib.parse
+    
+    # Internal database URL dan foydalaning
     db_url = DATABASE_URL
-    # Agar URL da sslmode bo'lsa, uni olib tashlaymiz
-    if 'sslmode' in db_url:
-        import urllib.parse
-        parsed = urllib.parse.urlparse(db_url)
-        # Query params dan sslmode ni olib tashlaymiz
-        query_params = urllib.parse.parse_qs(parsed.query)
-        query_params.pop('sslmode', None)
-        new_query = urllib.parse.urlencode(query_params, doseq=True)
-        db_url = urllib.parse.urlunparse((
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            parsed.params,
-            new_query,
-            parsed.fragment
-        ))
+    
+    # URL ni parse qilamiz
+    parsed = urllib.parse.urlparse(db_url)
+    
+    # Query parametrlarini olib tashlaymiz (sslmode, ssl va boshqalar)
+    if parsed.query:
+        # Faqat host, port, user, password, database qismini olamiz
+        db_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
     
     # SSLsiz ulanish
     conn = psycopg2.connect(db_url)
