@@ -1118,6 +1118,77 @@
             padding: 2px 7px;
             border-radius: 6px;
         }
+
+        .admin-user-card.clickable { cursor: pointer; }
+        .admin-user-card.clickable:active { opacity: 0.7; }
+
+        /* ---------- Admin: foydalanuvchi tafsilotlari (to'liq ekran) ---------- */
+        .modal-sheet-full {
+            width: 100%;
+            max-width: 420px;
+            height: 92vh;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 24px 24px 0 0;
+            display: flex;
+            flex-direction: column;
+            transform: translateY(20px);
+            transition: transform 0.2s;
+            overflow: hidden;
+        }
+
+        .modal-overlay.show .modal-sheet-full {
+            transform: translateY(0);
+        }
+
+        .admin-detail-header {
+            flex-shrink: 0;
+            padding: 20px 18px 14px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .admin-detail-name {
+            font-size: 1.05rem;
+            font-weight: 800;
+            color: #ffffff;
+        }
+
+        .admin-detail-meta {
+            font-size: 0.75rem;
+            color: var(--text2);
+            margin-top: 4px;
+        }
+
+        .admin-detail-close-btn {
+            flex-shrink: 0;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            background: rgba(255,255,255,0.04);
+            color: var(--text2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+
+        .admin-detail-close-btn svg { width: 16px; height: 16px; }
+
+        .admin-detail-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 14px 18px 28px;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .admin-detail-body .section-header { margin-top: 18px; }
+        .admin-detail-body .section-header:first-child { margin-top: 0; }
+        .admin-detail-body .card { margin-bottom: 4px; }
     </style>
 </head>
 <body>
@@ -1496,6 +1567,24 @@
             <div class="modal-actions">
                 <button class="modal-cancel-btn" id="adminEditCancelBtn">bekor qilish</button>
                 <button class="modal-cancel-btn" id="adminEditDeleteBtn" style="color: var(--red); border-color: rgba(255,71,87,0.3);">o'chirish</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin: foydalanuvchi tafsilotlari (to'liq ma'lumot) -->
+    <div class="modal-overlay" id="adminUserDetailOverlay">
+        <div class="modal-sheet-full">
+            <div class="admin-detail-header">
+                <div>
+                    <div class="admin-detail-name" id="adminDetailName">—</div>
+                    <div class="admin-detail-meta" id="adminDetailMeta">—</div>
+                </div>
+                <button class="admin-detail-close-btn" id="adminDetailCloseBtn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="admin-detail-body" id="adminDetailBody">
+                <div class="empty-box"><div class="empty-text">yuklanmoqda...</div></div>
             </div>
         </div>
     </div>
@@ -2198,6 +2287,9 @@
         // Tahrirlash modali
         let editingId = null;
         let editingType = null;
+        // 'self' — foydalanuvchi o'z yozuvini tahrirlaydi, 'admin' — admin
+        // boshqa foydalanuvchining yozuvini admin panel orqali tahrirlaydi.
+        let editContext = 'self';
 
         function openEditModal(dataset) {
             editingId = dataset.id;
@@ -2214,6 +2306,7 @@
             $('#editModalOverlay').classList.remove('show');
             editingId = null;
             editingType = null;
+            editContext = 'self';
         }
 
         $('#editModalOverlay').addEventListener('click', (e) => {
@@ -2236,8 +2329,13 @@
                 return;
             }
 
+            const isAdminEdit = editContext === 'admin';
+            const url = isAdminEdit
+                ? '/api/admin/users/' + adminDetailUserId + '/transactions/' + editingId
+                : '/api/transactions/' + editingId;
+
             try {
-                await api('/api/transactions/' + editingId, {
+                await api(url, {
                     method: 'PUT',
                     body: JSON.stringify({
                         type: editingType,
@@ -2249,7 +2347,11 @@
                 if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
                 showToast('yangilandi');
                 closeEditModal();
-                await loadTransactions();
+                if (isAdminEdit) {
+                    await loadAdminUserDetail();
+                } else {
+                    await loadTransactions();
+                }
             } catch (e) {
                 showToast('xatolik: ' + e.message);
             }
@@ -2258,6 +2360,22 @@
         $('#editDeleteBtn').addEventListener('click', async () => {
             if (!editingId) return;
             if (!confirm("o'chirishni xohlaysizmi?")) return;
+            const isAdminDelete = editContext === 'admin';
+            const delUrl = isAdminDelete
+                ? '/api/admin/users/' + adminDetailUserId + '/transactions/' + editingId
+                : '/api/transactions/' + editingId;
+            if (isAdminDelete) {
+                try {
+                    await api(delUrl, { method: 'DELETE' });
+                    showToast("o'chirildi");
+                    closeEditModal();
+                    await loadAdminUserDetail();
+                    await loadAdminUsers();
+                } catch (e) {
+                    showToast("o'chirib bo'lmadi");
+                }
+                return;
+            }
             try {
                 await api('/api/transactions/' + editingId, { method: 'DELETE' });
                 showToast("o'chirildi");
@@ -2503,6 +2621,9 @@
 
         // Qarz qatoridagi tugmalar: to'landi belgilash / tahrirlash / o'chirish
         let editingDebtId = null;
+        // 'self' — foydalanuvchi o'z qarzini tahrirlaydi, 'admin' — admin
+        // boshqa foydalanuvchining qarzini admin panel orqali tahrirlaydi.
+        let debtEditContext = 'self';
 
         function openDebtEditModal(dataset) {
             editingDebtId = dataset.id;
@@ -2515,6 +2636,7 @@
         function closeDebtEditModal() {
             $('#debtEditModalOverlay').classList.remove('show');
             editingDebtId = null;
+            debtEditContext = 'self';
         }
 
         document.querySelectorAll('#view-debts').forEach(section => {
@@ -2579,14 +2701,23 @@
                 return;
             }
 
+            const isAdminEdit = debtEditContext === 'admin';
+            const url = isAdminEdit
+                ? '/api/admin/users/' + adminDetailUserId + '/debts/' + editingDebtId
+                : '/api/debts/' + editingDebtId;
+
             try {
-                await api('/api/debts/' + editingDebtId, {
+                await api(url, {
                     method: 'PUT',
                     body: JSON.stringify({ person_name: personName, amount, note })
                 });
                 showToast('yangilandi');
                 closeDebtEditModal();
-                await loadDebts();
+                if (isAdminEdit) {
+                    await loadAdminUserDetail();
+                } else {
+                    await loadDebts();
+                }
             } catch (e) {
                 showToast('xatolik: ' + e.message);
             }
@@ -2595,8 +2726,24 @@
         $('#debtEditDeleteBtn').addEventListener('click', async () => {
             if (!editingDebtId) return;
             if (!confirm("o'chirishni xohlaysizmi?")) return;
+            const isAdminDelete = debtEditContext === 'admin';
+            const delUrl = isAdminDelete
+                ? '/api/admin/users/' + adminDetailUserId + '/debts/' + editingDebtId
+                : '/api/debts/' + editingDebtId;
+            if (isAdminDelete) {
+                try {
+                    await api(delUrl, { method: 'DELETE' });
+                    showToast("o'chirildi");
+                    closeDebtEditModal();
+                    await loadAdminUserDetail();
+                    await loadAdminUsers();
+                } catch (e) {
+                    showToast("o'chirib bo'lmadi");
+                }
+                return;
+            }
             try {
-                await api('/api/debts/' + editingDebtId, { method: 'DELETE' });
+                await api(delUrl, { method: 'DELETE' });
                 showToast("o'chirildi");
                 closeDebtEditModal();
                 await loadDebts();
@@ -2682,7 +2829,7 @@
                     </div>
                 `;
                 return `
-                    <div class="admin-user-card">
+                    <div class="admin-user-card clickable" data-detail-id="${u.telegram_id}">
                         <div class="tx-icon-box admin-box">${icon('person')}</div>
                         <div class="admin-user-info">
                             <div class="admin-user-name">${escapeAttr(fullName)} ${youTag}</div>
@@ -2738,6 +2885,12 @@
                 }
                 return;
             }
+
+            const detailCard = e.target.closest('.admin-user-card.clickable');
+            if (detailCard) {
+                openAdminUserDetail(detailCard.dataset.detailId);
+                return;
+            }
         });
 
         $('#adminUserEditModalOverlay').addEventListener('click', (e) => {
@@ -2782,6 +2935,212 @@
                 showToast('xatolik: ' + e.message);
             }
         });
+
+        // ============================================================
+        // ADMIN PANEL — foydalanuvchi tafsilotlari (to'liq ma'lumot)
+        // ============================================================
+        let adminDetailUserId = null;
+        let adminDetailData = null;
+
+        async function openAdminUserDetail(userId) {
+            adminDetailUserId = userId;
+            $('#adminUserDetailOverlay').classList.add('show');
+            $('#adminDetailBody').innerHTML = '<div class="empty-box"><div class="empty-text">yuklanmoqda...</div></div>';
+            await loadAdminUserDetail();
+        }
+
+        function closeAdminUserDetail() {
+            $('#adminUserDetailOverlay').classList.remove('show');
+            adminDetailUserId = null;
+            adminDetailData = null;
+        }
+
+        async function loadAdminUserDetail() {
+            if (!adminDetailUserId) return;
+            try {
+                adminDetailData = await api('/api/admin/users/' + adminDetailUserId + '/details');
+                renderAdminUserDetail();
+            } catch (e) {
+                $('#adminDetailBody').innerHTML = '<div class="empty-box"><div class="empty-text">yuklab bo\'lmadi</div></div>';
+                showToast('xatolik: ' + e.message);
+            }
+        }
+
+        function createAdminTxItemHTML(t) {
+            const date = new Date(t.created_at);
+            const dateStr = date.toLocaleDateString('uz-UZ', { day: '2-digit', month: 'short', year: 'numeric' });
+            const sign = t.type === 'income' ? '+' : '−';
+            const cls = t.type === 'income' ? 'green' : 'red';
+            const boxCls = t.type === 'income' ? 'income-box' : 'expense-box';
+            const boxIcon = t.type === 'income' ? icon('arrowUp') : icon('arrowDown');
+            const desc = t.type === 'income' ? 'Kirim' : t.category;
+
+            return `
+                <div class="tx-item">
+                    <div class="tx-icon-box ${boxCls}">${boxIcon}</div>
+                    <div class="tx-info">
+                        <div class="tx-desc">${desc}</div>
+                        <div class="tx-date">${dateStr}${t.note ? '<span class="tx-note-small"> · ' + escapeAttr(t.note) + '</span>' : ''}</div>
+                    </div>
+                    <div class="tx-sum ${cls}">${sign}${fmt(t.amount)}</div>
+                    <div class="tx-actions">
+                        <button class="tx-icon-btn edit-btn admin-tx-edit-btn" data-id="${t.id}" data-type="${t.type}" data-amount="${t.amount}" data-category="${escapeAttr(t.category)}" data-note="${escapeAttr(t.note)}">${icon('edit')}</button>
+                        <button class="tx-icon-btn delete-btn admin-tx-delete-btn" data-id="${t.id}">${icon('trash')}</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function createAdminDebtItemHTML(d) {
+            const dateStr = new Date(d.created_at).toLocaleDateString('uz-UZ', { day: '2-digit', month: 'short', year: 'numeric' });
+            const cls = d.direction === 'given' ? 'green' : 'red';
+            const boxCls = d.direction === 'given' ? 'income-box' : 'expense-box';
+            const sign = d.is_payment ? '−' : '+';
+            const amountCls = d.is_payment ? 'blue-text' : cls;
+            const directionLabel = d.direction === 'given' ? 'unga qarz berilgan' : 'undan qarzdorman';
+            const statusTag = d.is_paid ? " · to'langan" : '';
+            const paymentTag = d.is_payment ? '<span class="debt-payment-tag">to\'lov</span>' : '';
+
+            return `
+                <div class="tx-item debt-item ${d.is_paid ? 'debt-paid' : ''}">
+                    <div class="tx-icon-box ${boxCls}">${icon('person')}</div>
+                    <div class="tx-info">
+                        <div class="tx-desc">${escapeAttr(d.person_name)} ${paymentTag}</div>
+                        <div class="tx-date">${directionLabel}${statusTag} · ${dateStr}${d.note ? ' · ' + escapeAttr(d.note) : ''}</div>
+                    </div>
+                    <div class="tx-sum ${amountCls}">${sign}${fmt(d.amount)}</div>
+                    <div class="tx-actions">
+                        <button class="tx-icon-btn edit-btn admin-debt-edit-btn" data-id="${d.id}" data-person="${escapeAttr(d.person_name)}" data-amount="${d.amount}" data-note="${escapeAttr(d.note)}">${icon('edit')}</button>
+                        <button class="tx-icon-btn delete-btn admin-debt-delete-btn" data-id="${d.id}">${icon('trash')}</button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderAdminUserDetail() {
+            if (!adminDetailData) return;
+            const { user, summary, transactions: dTx, debts: dDebts } = adminDetailData;
+
+            const fullName = (user.first_name + ' ' + (user.last_name || '')).trim() || "noma'lum";
+            const phone = user.phone ? user.phone : 'telefon kiritilmagan';
+            $('#adminDetailName').textContent = fullName;
+            $('#adminDetailMeta').textContent = phone + (user.username ? ' · @' + user.username : '');
+
+            const balCls = summary.balance >= 0 ? 'green' : 'red';
+            const netDebt = summary.debt_given - summary.debt_taken;
+            const netDebtCls = netDebt >= 0 ? 'green' : 'red';
+
+            const txListHTML = dTx.length === 0
+                ? '<div class="empty-box"><div class="empty-text">hali tranzaksiya yo\'q</div></div>'
+                : dTx.map(createAdminTxItemHTML).join('');
+
+            const debtListHTML = dDebts.length === 0
+                ? '<div class="empty-box"><div class="empty-text">hali qarz yozuvi yo\'q</div></div>'
+                : dDebts.map(createAdminDebtItemHTML).join('');
+
+            $('#adminDetailBody').innerHTML = `
+                <div class="admin-summary-row" style="margin-top:0;">
+                    <div class="stat-box">
+                        <div class="stat-title">kirim</div>
+                        <div class="stat-amount green">${fmt(summary.income)}</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-title">xarajat</div>
+                        <div class="stat-amount red">${fmt(summary.expense)}</div>
+                    </div>
+                </div>
+                <div class="total-expense-row" style="margin-top:10px;">
+                    <span class="total-expense-label">balans</span>
+                    <span class="total-expense-value ${balCls}" style="color: var(--${balCls});">${summary.balance >= 0 ? '+' : '−'}${fmt(Math.abs(summary.balance))} so'm</span>
+                </div>
+
+                <div class="debt-summary-row" style="margin-top:16px;">
+                    <div class="debt-summary-box">
+                        <div class="debt-summary-title">unga qarzdor (menga)</div>
+                        <div class="debt-summary-value green">+${fmt(summary.debt_given)}</div>
+                    </div>
+                    <div class="debt-summary-box">
+                        <div class="debt-summary-title">undan qarzdor</div>
+                        <div class="debt-summary-value red">−${fmt(summary.debt_taken)}</div>
+                    </div>
+                </div>
+                <div class="total-expense-row" style="margin-top:10px;">
+                    <span class="total-expense-label">sof qarz balansi</span>
+                    <span class="total-expense-value ${netDebtCls}" style="color: var(--${netDebtCls});">${netDebt >= 0 ? '+' : '−'}${fmt(Math.abs(netDebt))} so'm</span>
+                </div>
+
+                <div class="section-header">
+                    <h2 class="section-title">tranzaksiyalar</h2>
+                    <span class="section-badge">${dTx.length} ta</span>
+                </div>
+                <div class="card">${txListHTML}</div>
+
+                <div class="section-header">
+                    <h2 class="section-title">qarzlar</h2>
+                    <span class="section-badge">${dDebts.length} ta</span>
+                </div>
+                <div class="card">${debtListHTML}</div>
+            `;
+        }
+
+        $('#adminDetailCloseBtn').addEventListener('click', closeAdminUserDetail);
+        $('#adminUserDetailOverlay').addEventListener('click', (e) => {
+            if (e.target.id === 'adminUserDetailOverlay') closeAdminUserDetail();
+        });
+
+        $('#adminDetailBody').addEventListener('click', (e) => {
+            const txEditBtn = e.target.closest('.admin-tx-edit-btn');
+            if (txEditBtn) {
+                editContext = 'admin';
+                openEditModal(txEditBtn.dataset);
+                return;
+            }
+
+            const txDelBtn = e.target.closest('.admin-tx-delete-btn');
+            if (txDelBtn) {
+                adminDeleteTransactionConfirm(txDelBtn.dataset.id);
+                return;
+            }
+
+            const debtEditBtn = e.target.closest('.admin-debt-edit-btn');
+            if (debtEditBtn) {
+                debtEditContext = 'admin';
+                openDebtEditModal(debtEditBtn.dataset);
+                return;
+            }
+
+            const debtDelBtn = e.target.closest('.admin-debt-delete-btn');
+            if (debtDelBtn) {
+                adminDeleteDebtConfirm(debtDelBtn.dataset.id);
+                return;
+            }
+        });
+
+        async function adminDeleteTransactionConfirm(id) {
+            if (!confirm("ushbu yozuvni o'chirishni xohlaysizmi?")) return;
+            try {
+                await api('/api/admin/users/' + adminDetailUserId + '/transactions/' + id, { method: 'DELETE' });
+                if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('warning');
+                showToast("yozuv o'chirildi");
+                await loadAdminUserDetail();
+                await loadAdminUsers();
+            } catch (e) {
+                showToast("o'chirib bo'lmadi");
+            }
+        }
+
+        async function adminDeleteDebtConfirm(id) {
+            if (!confirm("ushbu qarz yozuvini o'chirishni xohlaysizmi?")) return;
+            try {
+                await api('/api/admin/users/' + adminDetailUserId + '/debts/' + id, { method: 'DELETE' });
+                if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('warning');
+                showToast("o'chirildi");
+                await loadAdminUserDetail();
+                await loadAdminUsers();
+            } catch (e) {
+                showToast("o'chirib bo'lmadi");
+            }
+        }
 
         // Boshlash
         attachMoneyFormatting();
