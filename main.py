@@ -1057,8 +1057,68 @@ def api_export_pdf():
 
 
 # ---------------------------------------------------------------------------
-# Admin — foydalanuvchini o'chirish
+# Admin — foydalanuvchilarni boshqarish
 # ---------------------------------------------------------------------------
+def serialize_admin_user(u, all_tx, all_debts):
+    uid = str(u["telegram_id"])
+    return {
+        "telegram_id": u["telegram_id"],
+        "first_name": u.get("first_name", ""),
+        "last_name": u.get("last_name", ""),
+        "phone": u.get("phone", ""),
+        "username": u.get("username", ""),
+        "created_at": u.get("created_at", ""),
+        "tx_count": len(all_tx.get(uid, [])),
+        "debt_count": len(all_debts.get(uid, [])),
+        "is_admin": is_admin_user(u["telegram_id"]),
+    }
+
+
+@app.route("/api/admin/users", methods=["GET"])
+def api_admin_list_users():
+    user, err = require_admin()
+    if err:
+        return err
+
+    users = _load_json(USERS_FILE, {})
+    all_tx = _load_json(TRANSACTIONS_FILE, {})
+    all_debts = _load_json(DEBTS_FILE, {})
+
+    result = [
+        serialize_admin_user(u, all_tx, all_debts)
+        for u in sorted(users.values(), key=lambda x: x.get("created_at", ""), reverse=True)
+    ]
+    return jsonify(result)
+
+
+@app.route("/api/admin/users/<int:user_id>", methods=["PUT"])
+def api_admin_update_user(user_id):
+    user, err = require_admin()
+    if err:
+        return err
+
+    users = _load_json(USERS_FILE, {})
+    if str(user_id) not in users:
+        return jsonify({"error": "foydalanuvchi topilmadi"}), 404
+
+    data = request.get_json(silent=True) or {}
+    first_name = (data.get("first_name") or "").strip()[:100]
+    last_name = (data.get("last_name") or "").strip()[:100]
+    phone = (data.get("phone") or "").strip()[:30]
+
+    if not first_name:
+        return jsonify({"error": "ism kiritilmagan"}), 400
+
+    users[str(user_id)]["first_name"] = first_name
+    users[str(user_id)]["last_name"] = last_name
+    users[str(user_id)]["phone"] = phone
+    _save_json(USERS_FILE, users)
+
+    all_tx = _load_json(TRANSACTIONS_FILE, {})
+    all_debts = _load_json(DEBTS_FILE, {})
+    return jsonify(serialize_admin_user(users[str(user_id)], all_tx, all_debts))
+
+
 @app.route("/api/admin/users/<int:user_id>", methods=["DELETE"])
 def api_admin_delete_user(user_id):
     user, err = require_admin()
@@ -1105,6 +1165,17 @@ def contact_keyboard() -> ReplyKeyboardMarkup:
 
 
 def webapp_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
+    if is_admin:
+        # Admin uchun faqat bitta tugma — to'g'ridan-to'g'ri Admin panelga olib boradi.
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🛠 Admin panelni ochish",
+                    web_app=WebAppInfo(url=WEBAPP_URL),
+                )
+            ],
+        ])
+
     rows = [
         [
             InlineKeyboardButton(
@@ -1119,13 +1190,6 @@ def webapp_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
             )
         ],
     ]
-    if is_admin:
-        rows.append([
-            InlineKeyboardButton(
-                text="🛠 Admin panel",
-                callback_data="admin_panel",
-            )
-        ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -1159,16 +1223,37 @@ async def cmd_start(message: Message):
     user = get_user(message.from_user.id)
 
     if user:
-        greeting = (
-            f"Salom, <b>{message.from_user.first_name}</b>! 👋 (admin)\n\n"
-            "Hisobchi tayyor. Odatdagidek kirim/xarajatlaringizni boshqarishingiz "
-            "mumkin, shu bilan birga admin panelidan ham foydalanishingiz mumkin."
-            if is_admin else
-            f"Salom, <b>{message.from_user.first_name}</b>! 👋\n\n"
-            "Hisobchi tayyor — kirim va xarajatlaringizni boshqarish uchun "
-            "quyidagi tugmani bosing."
-        )
+        if is_admin:
+            greeting = (
+                f"Salom, <b>{message.from_user.first_name}</b>! 👋\n\n"
+                "Siz <b>admin</b> sifatida kirdingiz. Quyidagi tugma orqali "
+                "faqat foydalanuvchilarni boshqarish uchun Admin panelni oching."
+            )
+        else:
+            greeting = (
+                f"Salom, <b>{message.from_user.first_name}</b>! 👋\n\n"
+                "Hisobchi tayyor — kirim va xarajatlaringizni boshqarish uchun "
+                "quyidagi tugmani bosing."
+            )
         await message.answer(greeting, reply_markup=webapp_keyboard(is_admin))
+        return
+
+    if is_admin:
+        # Admin ro'yxatdan o'tmagan bo'lsa ham, telefon so'ramasdan
+        # to'g'ridan-to'g'ri Admin panelga kira oladi.
+        upsert_user(
+            telegram_id=message.from_user.id,
+            phone="",
+            first_name=message.from_user.first_name,
+            last_name=message.from_user.last_name,
+            username=message.from_user.username,
+        )
+        await message.answer(
+            f"Salom, <b>{message.from_user.first_name}</b>! 👋\n\n"
+            "Siz <b>admin</b> sifatida kirdingiz. Quyidagi tugma orqali "
+            "Admin panelni oching.",
+            reply_markup=webapp_keyboard(True),
+        )
         return
 
     await message.answer(
@@ -1199,23 +1284,27 @@ async def on_contact(message: Message):
         username=message.from_user.username,
     )
 
+    is_admin = ADMIN_ID != 0 and message.from_user.id == ADMIN_ID
+
     await message.answer(
         "✅ Ro'yxatdan muvaffaqiyatli o'tdingiz!",
         reply_markup=ReplyKeyboardRemove(),
     )
     await message.answer(
-        "Endi Hisobchidan foydalanishingiz mumkin 👇",
-        reply_markup=webapp_keyboard(ADMIN_ID != 0 and message.from_user.id == ADMIN_ID),
+        "Admin panelni ochish uchun tugmani bosing 👇" if is_admin
+        else "Endi Hisobchidan foydalanishingiz mumkin 👇",
+        reply_markup=webapp_keyboard(is_admin),
     )
 
 
 @router.message()
 async def block_unregistered(message: Message):
     user = get_user(message.from_user.id)
+    is_admin = ADMIN_ID != 0 and message.from_user.id == ADMIN_ID
     if user:
-        is_admin = ADMIN_ID != 0 and message.from_user.id == ADMIN_ID
         await message.answer(
-            "Hisobchini ochish uchun tugmani bosing 👇",
+            "Admin panelni ochish uchun tugmani bosing 👇" if is_admin
+            else "Hisobchini ochish uchun tugmani bosing 👇",
             reply_markup=webapp_keyboard(is_admin),
         )
     else:
@@ -1235,39 +1324,6 @@ async def on_monthly_report(callback: CallbackQuery):
     summary = get_monthly_summary(callback.from_user.id)
     text = format_monthly_report(summary)
     await callback.message.answer(text)
-    await callback.answer()
-
-
-@router.callback_query(F.data == "admin_panel")
-async def on_admin_panel(callback: CallbackQuery):
-    if ADMIN_ID == 0 or callback.from_user.id != ADMIN_ID:
-        await callback.answer("Bu bo'lim faqat admin uchun", show_alert=True)
-        return
-
-    stats = get_admin_stats()
-
-    def fmt(n):
-        return f"{n:,.0f}".replace(",", " ")
-
-    lines = [
-        "🛠 <b>Admin panel</b>\n",
-        f"👥 Ro'yxatdan o'tganlar: <b>{stats['total_users']}</b>",
-        f"📝 Jami kirim/xarajat yozuvlari: <b>{stats['total_transactions']}</b>",
-        f"🤝 Jami qarz yozuvlari: <b>{stats['total_debts']}</b>",
-        "",
-        "<b>Shu oy (barcha foydalanuvchilar bo'yicha):</b>",
-        f"➕ Kirim: {fmt(stats['month_income'])} so'm",
-        f"➖ Xarajat: {fmt(stats['month_expense'])} so'm",
-    ]
-
-    if stats["recent_users"]:
-        lines.append("\n<b>So'nggi ro'yxatdan o'tganlar:</b>")
-        for u in stats["recent_users"]:
-            name = u.get("first_name") or "noma'lum"
-            phone = u.get("phone") or "-"
-            lines.append(f"• {name} — {phone}")
-
-    await callback.message.answer("\n".join(lines), reply_markup=webapp_keyboard(True))
     await callback.answer()
 
 
