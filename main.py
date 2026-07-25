@@ -3,7 +3,7 @@
 Hisobchi — To'liq backend va Telegram bot (bitta faylda)
 - Flask web-server
 - Telegram bot (polling) alohida threadda
-- PostgreSQL (Render Postgres) bilan ishlaydi
+- JSON fayllarda ma'lumot saqlash (PostgreSQL o'rniga)
 """
 import os
 import hmac
@@ -16,9 +16,8 @@ import time
 import logging
 from datetime import datetime
 from urllib.parse import parse_qsl
+from pathlib import Path
 
-import psycopg2
-import psycopg2.extras
 import requests
 from flask import Flask, request, jsonify, render_template, send_file
 
@@ -62,12 +61,320 @@ logger = logging.getLogger("hisobchi")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "")
 WEBAPP_URL = os.environ.get("WEBAPP_URL", "")
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 try:
     ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 except ValueError:
     ADMIN_ID = 0
+
+
+# ---------------------------------------------------------------------------
+# JSON ma'lumotlar bazasi
+# ---------------------------------------------------------------------------
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+
+USERS_FILE = DATA_DIR / "users.json"
+TRANSACTIONS_FILE = DATA_DIR / "transactions.json"
+DEBTS_FILE = DATA_DIR / "debts.json"
+
+# Har bir fayl uchun ID counter
+COUNTERS_FILE = DATA_DIR / "counters.json"
+
+
+def _load_json(filepath, default=None):
+    """JSON faylni yuklaydi, agar mavjud bo'lmasa default qaytaradi."""
+    if default is None:
+        default = {}
+    try:
+        if filepath.exists():
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return default
+    except (json.JSONDecodeError, OSError):
+        return default
+
+
+def _save_json(filepath, data):
+    """Ma'lumotni JSON faylga saqlaydi."""
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def _get_next_id(counter_name):
+    """Berilgan counter uchun keyingi ID ni qaytaradi."""
+    counters = _load_json(COUNTERS_FILE, {})
+    next_id = counters.get(counter_name, 1)
+    counters[counter_name] = next_id + 1
+    _save_json(COUNTERS_FILE, counters)
+    return next_id
+
+
+def _to_iso(dt):
+    """DateTime ni ISO formatga o'tkazadi."""
+    if dt is None:
+        return None
+    return dt.isoformat() + "Z"
+
+
+def _from_iso(iso_str):
+    """ISO string dan datetime yaratadi."""
+    if iso_str is None:
+        return None
+    return datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+
+
+# ---------------------------------------------------------------------------
+# Users
+# ---------------------------------------------------------------------------
+def get_user(telegram_id):
+    users = _load_json(USERS_FILE, {})
+    return users.get(str(telegram_id))
+
+
+def upsert_user(telegram_id, phone, first_name, last_name, username):
+    users = _load_json(USERS_FILE, {})
+    users[str(telegram_id)] = {
+        "telegram_id": telegram_id,
+        "phone": phone,
+        "first_name": first_name or "",
+        "last_name": last_name or "",
+        "username": username or "",
+        "created_at": _to_iso(datetime.utcnow())
+    }
+    _save_json(USERS_FILE, users)
+    return users[str(telegram_id)]
+
+
+def get_all_users():
+    users = _load_json(USERS_FILE, {})
+    return list(users.values())
+
+
+# ---------------------------------------------------------------------------
+# Transactions
+# ---------------------------------------------------------------------------
+def get_transactions(telegram_id):
+    all_tx = _load_json(TRANSACTIONS_FILE, {})
+    user_tx = all_tx.get(str(telegram_id), [])
+    # created_at bo'yicha tartiblash
+    return sorted(user_tx, key=lambda x: x.get("created_at", ""), reverse=True)
+
+
+def add_transaction(telegram_id, type_, amount, category, note):
+    all_tx = _load_json(TRANSACTIONS_FILE, {})
+    user_tx = all_tx.get(str(telegram_id), [])
+    
+    tx = {
+        "id": _get_next_id("transaction"),
+        "telegram_id": telegram_id,
+        "type": type_,
+        "amount": float(amount),
+        "category": category or "",
+        "note": note or "",
+        "created_at": _to_iso(datetime.utcnow())
+    }
+    user_tx.append(tx)
+    all_tx[str(telegram_id)] = user_tx
+    _save_json(TRANSACTIONS_FILE, all_tx)
+    return tx
+
+
+def get_transaction(telegram_id, tx_id):
+    all_tx = _load_json(TRANSACTIONS_FILE, {})
+    user_tx = all_tx.get(str(telegram_id), [])
+    for tx in user_tx:
+        if tx["id"] == tx_id:
+            return tx
+    return None
+
+
+def delete_transaction(telegram_id, tx_id):
+    all_tx = _load_json(TRANSACTIONS_FILE, {})
+    user_tx = all_tx.get(str(telegram_id), [])
+    new_user_tx = [tx for tx in user_tx if tx["id"] != tx_id]
+    if len(new_user_tx) != len(user_tx):
+        all_tx[str(telegram_id)] = new_user_tx
+        _save_json(TRANSACTIONS_FILE, all_tx)
+        return True
+    return False
+
+
+def update_transaction(telegram_id, tx_id, type_, amount, category, note):
+    all_tx = _load_json(TRANSACTIONS_FILE, {})
+    user_tx = all_tx.get(str(telegram_id), [])
+    for tx in user_tx:
+        if tx["id"] == tx_id:
+            tx["type"] = type_
+            tx["amount"] = float(amount)
+            tx["category"] = category or ""
+            tx["note"] = note or ""
+            all_tx[str(telegram_id)] = user_tx
+            _save_json(TRANSACTIONS_FILE, all_tx)
+            return tx
+    return None
+
+
+def delete_all_transactions(telegram_id):
+    all_tx = _load_json(TRANSACTIONS_FILE, {})
+    if str(telegram_id) in all_tx:
+        del all_tx[str(telegram_id)]
+        _save_json(TRANSACTIONS_FILE, all_tx)
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Debts
+# ---------------------------------------------------------------------------
+def get_debts(telegram_id):
+    all_debts = _load_json(DEBTS_FILE, {})
+    user_debts = all_debts.get(str(telegram_id), [])
+    return sorted(user_debts, key=lambda x: (x.get("is_paid", False), x.get("created_at", "")), reverse=True)
+
+
+def add_debt(telegram_id, direction, person_name, amount, note, is_payment=False):
+    all_debts = _load_json(DEBTS_FILE, {})
+    user_debts = all_debts.get(str(telegram_id), [])
+    
+    debt = {
+        "id": _get_next_id("debt"),
+        "telegram_id": telegram_id,
+        "direction": direction,
+        "person_name": person_name,
+        "amount": float(amount),
+        "note": note or "",
+        "is_paid": False,
+        "is_payment": bool(is_payment),
+        "created_at": _to_iso(datetime.utcnow()),
+        "paid_at": None
+    }
+    user_debts.append(debt)
+    all_debts[str(telegram_id)] = user_debts
+    _save_json(DEBTS_FILE, all_debts)
+    return debt
+
+
+def get_debt(telegram_id, debt_id):
+    all_debts = _load_json(DEBTS_FILE, {})
+    user_debts = all_debts.get(str(telegram_id), [])
+    for debt in user_debts:
+        if debt["id"] == debt_id:
+            return debt
+    return None
+
+
+def update_debt(telegram_id, debt_id, person_name, amount, note):
+    all_debts = _load_json(DEBTS_FILE, {})
+    user_debts = all_debts.get(str(telegram_id), [])
+    for debt in user_debts:
+        if debt["id"] == debt_id:
+            debt["person_name"] = person_name
+            debt["amount"] = float(amount)
+            debt["note"] = note or ""
+            all_debts[str(telegram_id)] = user_debts
+            _save_json(DEBTS_FILE, all_debts)
+            return debt
+    return None
+
+
+def set_debt_paid(telegram_id, debt_id, is_paid):
+    all_debts = _load_json(DEBTS_FILE, {})
+    user_debts = all_debts.get(str(telegram_id), [])
+    for debt in user_debts:
+        if debt["id"] == debt_id:
+            debt["is_paid"] = bool(is_paid)
+            debt["paid_at"] = _to_iso(datetime.utcnow()) if is_paid else None
+            all_debts[str(telegram_id)] = user_debts
+            _save_json(DEBTS_FILE, all_debts)
+            return debt
+    return None
+
+
+def delete_debt(telegram_id, debt_id):
+    all_debts = _load_json(DEBTS_FILE, {})
+    user_debts = all_debts.get(str(telegram_id), [])
+    new_user_debts = [d for d in user_debts if d["id"] != debt_id]
+    if len(new_user_debts) != len(user_debts):
+        all_debts[str(telegram_id)] = new_user_debts
+        _save_json(DEBTS_FILE, all_debts)
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Admin stats
+# ---------------------------------------------------------------------------
+def get_admin_stats():
+    users = _load_json(USERS_FILE, {})
+    all_tx = _load_json(TRANSACTIONS_FILE, {})
+    all_debts = _load_json(DEBTS_FILE, {})
+    
+    total_users = len(users)
+    total_transactions = sum(len(tx_list) for tx_list in all_tx.values())
+    total_debts = sum(len(d_list) for d_list in all_debts.values())
+    
+    # Shu oy uchun kirim/xarajat
+    current_month = datetime.utcnow().strftime("%Y-%m")
+    month_income = 0.0
+    month_expense = 0.0
+    
+    for tx_list in all_tx.values():
+        for tx in tx_list:
+            created = tx.get("created_at", "")
+            if created and created.startswith(current_month):
+                if tx["type"] == "income":
+                    month_income += float(tx["amount"])
+                else:
+                    month_expense += float(tx["amount"])
+    
+    # So'nggi 5 foydalanuvchi
+    recent_users = sorted(
+        users.values(),
+        key=lambda x: x.get("created_at", ""),
+        reverse=True
+    )[:5]
+    
+    return {
+        "total_users": total_users,
+        "total_transactions": total_transactions,
+        "total_debts": total_debts,
+        "month_income": month_income,
+        "month_expense": month_expense,
+        "recent_users": recent_users,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Monthly summary
+# ---------------------------------------------------------------------------
+def get_monthly_summary(telegram_id):
+    transactions = get_transactions(telegram_id)
+    income = 0.0
+    expense = 0.0
+    categories = {}
+    
+    current_month = datetime.utcnow().strftime("%Y-%m")
+    
+    for t in transactions:
+        created = t.get("created_at", "")
+        if created and created.startswith(current_month):
+            amount = float(t["amount"])
+            if t["type"] == "income":
+                income += amount
+            else:
+                expense += amount
+                cat = t.get("category", "boshqa")
+                categories[cat] = categories.get(cat, 0) + amount
+    
+    sorted_categories = sorted(categories.items(), key=lambda x: x[1], reverse=True)
+    
+    return {
+        "income": income,
+        "expense": expense,
+        "balance": income - expense,
+        "categories": sorted_categories,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -77,335 +384,306 @@ app = Flask(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Ma'lumotlar bazasi - Render internal database uchun SSL O'CHIRILGAN
+# Telegram WebApp initData tekshiruvi
 # ---------------------------------------------------------------------------
-def get_conn():
-    """Render internal database uchun ulanish - SSL O'CHIRILGAN."""
-    import urllib.parse
-    
-    db_url = DATABASE_URL
-    
-    # URL ni parse qilamiz
-    parsed = urllib.parse.urlparse(db_url)
-    
-    # Query parametrlarini olib tashlaymiz (sslmode, ssl va boshqalar)
-    if parsed.query:
-        db_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-    
-    # SSLsiz ulanish
-    conn = psycopg2.connect(db_url)
-    return conn
+def verify_init_data(init_data: str):
+    if not init_data or not BOT_TOKEN:
+        return None
+    try:
+        pairs = dict(parse_qsl(init_data, strict_parsing=True))
+    except ValueError:
+        return None
 
+    received_hash = pairs.pop("hash", None)
+    if not received_hash:
+        return None
 
-def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            telegram_id BIGINT PRIMARY KEY,
-            phone TEXT NOT NULL,
-            first_name TEXT,
-            last_name TEXT,
-            username TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS transactions (
-            id SERIAL PRIMARY KEY,
-            telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
-            type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
-            amount NUMERIC NOT NULL,
-            category TEXT DEFAULT '',
-            note TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT NOW()
-        )
-    """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions(telegram_id)")
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS debts (
-            id SERIAL PRIMARY KEY,
-            telegram_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
-            direction TEXT NOT NULL CHECK (direction IN ('given', 'taken')),
-            person_name TEXT NOT NULL,
-            amount NUMERIC NOT NULL,
-            note TEXT DEFAULT '',
-            is_paid BOOLEAN DEFAULT FALSE,
-            is_payment BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP DEFAULT NOW(),
-            paid_at TIMESTAMP
-        )
-    """)
-    cur.execute("ALTER TABLE debts ADD COLUMN IF NOT EXISTS is_payment BOOLEAN DEFAULT FALSE")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_debts_user ON debts(telegram_id)")
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def get_user(telegram_id):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM users WHERE telegram_id = %s", (telegram_id,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return row
-
-
-def upsert_user(telegram_id, phone, first_name, last_name, username):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO users (telegram_id, phone, first_name, last_name, username)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (telegram_id) DO UPDATE
-        SET phone = EXCLUDED.phone,
-            first_name = EXCLUDED.first_name,
-            last_name = EXCLUDED.last_name,
-            username = EXCLUDED.username
-    """, (telegram_id, phone, first_name, last_name, username))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def get_transactions(telegram_id):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        "SELECT * FROM transactions WHERE telegram_id = %s ORDER BY created_at DESC",
-        (telegram_id,)
+    data_check_string = "\n".join(
+        f"{k}={v}" for k, v in sorted(pairs.items())
     )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+    secret_key = hmac.new(
+        b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256
+    ).digest()
+    computed_hash = hmac.new(
+        secret_key, data_check_string.encode(), hashlib.sha256
+    ).hexdigest()
+
+    if not hmac.compare_digest(computed_hash, received_hash):
+        return None
+
+    user_raw = pairs.get("user")
+    if not user_raw:
+        return None
+    try:
+        user = json.loads(user_raw)
+    except json.JSONDecodeError:
+        return None
+
+    return user
 
 
-def add_transaction(telegram_id, type_, amount, category, note):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("""
-        INSERT INTO transactions (telegram_id, type, amount, category, note)
-        VALUES (%s, %s, %s, %s, %s)
-        RETURNING *
-    """, (telegram_id, type_, amount, category, note))
-    row = cur.fetchone()
-    conn.commit()
-    cur.close()
-    conn.close()
-    return row
+def require_auth():
+    init_data = request.headers.get("X-Telegram-Init-Data", "")
+    user = verify_init_data(init_data)
+    if user is None:
+        return None, (jsonify({"error": "Telegram orqali kiring"}), 401)
+    return user, None
 
 
-def get_transaction(telegram_id, tx_id):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        "SELECT * FROM transactions WHERE id = %s AND telegram_id = %s",
-        (tx_id, telegram_id)
-    )
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return row
+def require_registered():
+    user, err = require_auth()
+    if err:
+        return None, err
+    db_user = get_user(user["id"])
+    if not db_user:
+        return None, (jsonify({
+            "error": "not_registered",
+            "message": "Avval botda ro'yxatdan o'ting"
+        }), 403)
+    return user, None
 
 
-def delete_transaction(telegram_id, tx_id):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "DELETE FROM transactions WHERE id = %s AND telegram_id = %s",
-        (tx_id, telegram_id)
-    )
-    deleted = cur.rowcount
-    conn.commit()
-    cur.close()
-    conn.close()
-    return deleted > 0
+def is_admin_user(telegram_id):
+    return ADMIN_ID != 0 and telegram_id == ADMIN_ID
 
 
-def update_transaction(telegram_id, tx_id, type_, amount, category, note):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("""
-        UPDATE transactions
-        SET type = %s, amount = %s, category = %s, note = %s
-        WHERE id = %s AND telegram_id = %s
-        RETURNING *
-    """, (type_, amount, category, note, tx_id, telegram_id))
-    row = cur.fetchone()
-    conn.commit()
-    cur.close()
-    conn.close()
-    return row
+def require_admin():
+    user, err = require_registered()
+    if err:
+        return None, err
+    if not is_admin_user(user["id"]):
+        return None, (jsonify({
+            "error": "faqat admin tahrirlashi/o'chirishi mumkin"
+        }), 403)
+    return user, None
 
 
-def get_admin_stats():
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+# ---------------------------------------------------------------------------
+# Sahifalar va API
+# ---------------------------------------------------------------------------
+def to_utc_iso(dt_str):
+    """JSON'dan o'qilgan datetime stringni qaytaradi."""
+    return dt_str
 
-    cur.execute("SELECT COUNT(*) AS c FROM users")
-    total_users = cur.fetchone()["c"]
 
-    cur.execute("SELECT COUNT(*) AS c FROM transactions")
-    total_transactions = cur.fetchone()["c"]
+@app.route("/")
+def index():
+    return render_template("index.html", bot_username=BOT_USERNAME)
 
-    cur.execute("SELECT COUNT(*) AS c FROM debts")
-    total_debts = cur.fetchone()["c"]
 
-    cur.execute("""
-        SELECT
-            COALESCE(SUM(amount) FILTER (WHERE type = 'income'), 0) AS income,
-            COALESCE(SUM(amount) FILTER (WHERE type = 'expense'), 0) AS expense
-        FROM transactions
-        WHERE date_trunc('month', created_at) = date_trunc('month', NOW())
-    """)
-    month_row = cur.fetchone()
+@app.route("/api/me")
+def api_me():
+    user, err = require_auth()
+    if err:
+        return err
+    db_user = get_user(user["id"])
+    if not db_user:
+        return jsonify({"registered": False}), 200
+    return jsonify({
+        "registered": True,
+        "first_name": db_user.get("first_name") or user.get("first_name", ""),
+        "phone": db_user.get("phone", ""),
+        "is_admin": is_admin_user(user["id"]),
+    }), 200
 
-    cur.execute("""
-        SELECT telegram_id, first_name, phone, created_at
-        FROM users
-        ORDER BY created_at DESC
-        LIMIT 5
-    """)
-    recent_users = cur.fetchall()
 
-    cur.close()
-    conn.close()
+@app.route("/api/transactions", methods=["GET"])
+def api_list_transactions():
+    user, err = require_registered()
+    if err:
+        return err
+    rows = get_transactions(user["id"])
+    result = [{
+        "id": r["id"],
+        "type": r["type"],
+        "amount": float(r["amount"]),
+        "category": r.get("category", ""),
+        "note": r.get("note", ""),
+        "created_at": r.get("created_at", ""),
+    } for r in rows]
+    return jsonify(result)
 
+
+@app.route("/api/transactions", methods=["POST"])
+def api_add_transaction():
+    user, err = require_registered()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    type_ = data.get("type")
+    amount = data.get("amount")
+    category = (data.get("category") or "").strip()[:100]
+    note = (data.get("note") or "").strip()[:200]
+
+    if type_ not in ("income", "expense"):
+        return jsonify({"error": "noto'g'ri turi"}), 400
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "noto'g'ri summa"}), 400
+    if amount <= 0:
+        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
+    if type_ == "expense" and not category:
+        return jsonify({"error": "kategoriya kerak"}), 400
+
+    row = add_transaction(user["id"], type_, amount, category or "kirim", note)
+    return jsonify({
+        "id": row["id"],
+        "type": row["type"],
+        "amount": float(row["amount"]),
+        "category": row.get("category", ""),
+        "note": row.get("note", ""),
+        "created_at": row.get("created_at", ""),
+    }), 201
+
+
+@app.route("/api/transactions/<int:tx_id>", methods=["PUT"])
+def api_update_transaction(tx_id):
+    user, err = require_admin()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    type_ = data.get("type")
+    amount = data.get("amount")
+    category = (data.get("category") or "").strip()[:100]
+    note = (data.get("note") or "").strip()[:200]
+
+    if type_ not in ("income", "expense"):
+        return jsonify({"error": "noto'g'ri turi"}), 400
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "noto'g'ri summa"}), 400
+    if amount <= 0:
+        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
+    if type_ == "expense" and not category:
+        return jsonify({"error": "kategoriya kerak"}), 400
+
+    row = update_transaction(user["id"], tx_id, type_, amount, category or "kirim", note)
+    if not row:
+        return jsonify({"error": "topilmadi"}), 404
+
+    return jsonify({
+        "id": row["id"],
+        "type": row["type"],
+        "amount": float(row["amount"]),
+        "category": row.get("category", ""),
+        "note": row.get("note", ""),
+        "created_at": row.get("created_at", ""),
+    }), 200
+
+
+@app.route("/api/transactions/<int:tx_id>", methods=["DELETE"])
+def api_delete_transaction(tx_id):
+    user, err = require_admin()
+    if err:
+        return err
+    ok = delete_transaction(user["id"], tx_id)
+    if not ok:
+        return jsonify({"error": "topilmadi"}), 404
+    return jsonify({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# API — Qarz daftari
+# ---------------------------------------------------------------------------
+def serialize_debt(row):
     return {
-        "total_users": total_users,
-        "total_transactions": total_transactions,
-        "total_debts": total_debts,
-        "month_income": float(month_row["income"]),
-        "month_expense": float(month_row["expense"]),
-        "recent_users": recent_users,
+        "id": row["id"],
+        "direction": row["direction"],
+        "person_name": row["person_name"],
+        "amount": float(row["amount"]),
+        "note": row.get("note", ""),
+        "is_paid": row.get("is_paid", False),
+        "is_payment": row.get("is_payment", False),
+        "created_at": row.get("created_at", ""),
+        "paid_at": row.get("paid_at"),
     }
 
 
-def get_monthly_summary(telegram_id):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("""
-        SELECT type, category, SUM(amount) AS total
-        FROM transactions
-        WHERE telegram_id = %s
-          AND date_trunc('month', created_at) = date_trunc('month', NOW())
-        GROUP BY type, category
-        ORDER BY total DESC
-    """, (telegram_id,))
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    income = 0.0
-    expense = 0.0
-    categories = []
-    for r in rows:
-        total = float(r["total"])
-        if r["type"] == "income":
-            income += total
-        else:
-            expense += total
-            categories.append((r["category"], total))
-
-    return {
-        "income": income,
-        "expense": expense,
-        "balance": income - expense,
-        "categories": categories,
-    }
+@app.route("/api/debts", methods=["GET"])
+def api_list_debts():
+    user, err = require_registered()
+    if err:
+        return err
+    rows = get_debts(user["id"])
+    return jsonify([serialize_debt(r) for r in rows])
 
 
-# ---------------------------------------------------------------------------
-# Qarz daftari
-# ---------------------------------------------------------------------------
-def get_debts(telegram_id):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        "SELECT * FROM debts WHERE telegram_id = %s ORDER BY is_paid ASC, created_at DESC",
-        (telegram_id,)
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
+@app.route("/api/debts", methods=["POST"])
+def api_add_debt():
+    user, err = require_registered()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    direction = data.get("direction")
+    person_name = (data.get("person_name") or "").strip()[:100]
+    amount = data.get("amount")
+    note = (data.get("note") or "").strip()[:200]
+    is_payment = bool(data.get("is_payment", False))
+
+    if direction not in ("given", "taken"):
+        return jsonify({"error": "noto'g'ri turi"}), 400
+    if not person_name:
+        return jsonify({"error": "ism kiritilmagan"}), 400
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "noto'g'ri summa"}), 400
+    if amount <= 0:
+        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
+
+    row = add_debt(user["id"], direction, person_name, amount, note, is_payment)
+    return jsonify(serialize_debt(row)), 201
 
 
-def add_debt(telegram_id, direction, person_name, amount, note, is_payment=False):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("""
-        INSERT INTO debts (telegram_id, direction, person_name, amount, note, is_payment)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        RETURNING *
-    """, (telegram_id, direction, person_name, amount, note, is_payment))
-    row = cur.fetchone()
-    conn.commit()
-    cur.close()
-    conn.close()
-    return row
+@app.route("/api/debts/<int:debt_id>", methods=["PUT"])
+def api_update_debt(debt_id):
+    user, err = require_admin()
+    if err:
+        return err
+
+    existing = get_debt(user["id"], debt_id)
+    if not existing:
+        return jsonify({"error": "topilmadi"}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    if "is_paid" in data and len(data) == 1:
+        row = set_debt_paid(user["id"], debt_id, bool(data["is_paid"]))
+        return jsonify(serialize_debt(row))
+
+    person_name = (data.get("person_name") or "").strip()[:100]
+    amount = data.get("amount")
+    note = (data.get("note") or "").strip()[:200]
+
+    if not person_name:
+        return jsonify({"error": "ism kiritilmagan"}), 400
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "noto'g'ri summa"}), 400
+    if amount <= 0:
+        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
+
+    row = update_debt(user["id"], debt_id, person_name, amount, note)
+    if not row:
+        return jsonify({"error": "topilmadi"}), 404
+    return jsonify(serialize_debt(row))
 
 
-def get_debt(telegram_id, debt_id):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        "SELECT * FROM debts WHERE id = %s AND telegram_id = %s",
-        (debt_id, telegram_id)
-    )
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return row
-
-
-def update_debt(telegram_id, debt_id, person_name, amount, note):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("""
-        UPDATE debts
-        SET person_name = %s, amount = %s, note = %s
-        WHERE id = %s AND telegram_id = %s
-        RETURNING *
-    """, (person_name, amount, note, debt_id, telegram_id))
-    row = cur.fetchone()
-    conn.commit()
-    cur.close()
-    conn.close()
-    return row
-
-
-def set_debt_paid(telegram_id, debt_id, is_paid):
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("""
-        UPDATE debts
-        SET is_paid = %s, paid_at = CASE WHEN %s THEN NOW() ELSE NULL END
-        WHERE id = %s AND telegram_id = %s
-        RETURNING *
-    """, (is_paid, is_paid, debt_id, telegram_id))
-    row = cur.fetchone()
-    conn.commit()
-    cur.close()
-    conn.close()
-    return row
-
-
-def delete_debt(telegram_id, debt_id):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "DELETE FROM debts WHERE id = %s AND telegram_id = %s",
-        (debt_id, telegram_id)
-    )
-    deleted = cur.rowcount
-    conn.commit()
-    cur.close()
-    conn.close()
-    return deleted > 0
+@app.route("/api/debts/<int:debt_id>", methods=["DELETE"])
+def api_delete_debt(debt_id):
+    user, err = require_admin()
+    if err:
+        return err
+    ok = delete_debt(user["id"], debt_id)
+    if not ok:
+        return jsonify({"error": "topilmadi"}), 404
+    return jsonify({"success": True})
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +702,13 @@ BRAND_RED = "FF4757"
 def _monthly_breakdown(transactions):
     months = {}
     for t in transactions:
-        d = t["created_at"]
+        created = t.get("created_at", "")
+        if not created:
+            continue
+        try:
+            d = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        except:
+            continue
         key = (d.year, d.month)
         if key not in months:
             months[key] = {"year": d.year, "month": d.month, "income": 0.0, "expense": 0.0}
@@ -488,12 +772,18 @@ def generate_excel_report(telegram_id, display_name):
     style_header_row(ws2, 1, len(headers2))
 
     for t in transactions:
+        created = t.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            date_str = dt.strftime("%d.%m.%Y %H:%M")
+        except:
+            date_str = created
         ws2.append([
-            t["created_at"].strftime("%d.%m.%Y %H:%M"),
+            date_str,
             "Kirim" if t["type"] == "income" else "Xarajat",
             float(t["amount"]),
-            t["category"] or "",
-            t["note"] or "",
+            t.get("category", ""),
+            t.get("note", ""),
         ])
 
     for row in ws2.iter_rows(min_row=2, max_row=max(ws2.max_row, 2), min_col=1, max_col=5):
@@ -510,13 +800,19 @@ def generate_excel_report(telegram_id, display_name):
     style_header_row(ws3, 1, len(headers3))
 
     for d in debts:
+        created = d.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            date_str = dt.strftime("%d.%m.%Y")
+        except:
+            date_str = created
         ws3.append([
             d["person_name"],
             "Menga qarzdor" if d["direction"] == "given" else "Men qarzdorman",
             float(d["amount"]),
-            "To'landi" if d["is_paid"] else "To'lanmagan",
-            d["created_at"].strftime("%d.%m.%Y"),
-            d["note"] or "",
+            "To'landi" if d.get("is_paid") else "To'lanmagan",
+            date_str,
+            d.get("note", ""),
         ])
 
     for row in ws3.iter_rows(min_row=2, max_row=max(ws3.max_row, 2), min_col=1, max_col=6):
@@ -625,7 +921,7 @@ def generate_pdf_report(telegram_id, display_name):
                 d["person_name"],
                 "Menga qarzdor" if d["direction"] == "given" else "Men qarzdorman",
                 fmt_num(float(d["amount"])),
-                "To'landi" if d["is_paid"] else "To'lanmagan",
+                "To'landi" if d.get("is_paid") else "To'lanmagan",
             ])
         debt_table = Table(debt_rows, colWidths=[45 * mm, 40 * mm, 35 * mm, 45 * mm])
         debt_table.setStyle(TableStyle([
@@ -646,11 +942,17 @@ def generate_pdf_report(telegram_id, display_name):
         elements.append(Paragraph("Barcha tranzaksiyalar", section_style))
         tx_rows = [["Sana", "Turi", "Summa", "Kategoriya"]]
         for t in transactions:
+            created = t.get("created_at", "")
+            try:
+                dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                date_str = dt.strftime("%d.%m.%Y %H:%M")
+            except:
+                date_str = created
             tx_rows.append([
-                t["created_at"].strftime("%d.%m.%Y %H:%M"),
+                date_str,
                 "Kirim" if t["type"] == "income" else "Xarajat",
                 fmt_num(float(t["amount"])),
-                t["category"] or "",
+                t.get("category", ""),
             ])
         tx_table = Table(tx_rows, colWidths=[38 * mm, 25 * mm, 32 * mm, 65 * mm], repeatRows=1)
         tx_table.setStyle(TableStyle([
@@ -669,308 +971,6 @@ def generate_pdf_report(telegram_id, display_name):
     doc.build(elements)
     buf.seek(0)
     return buf
-
-
-# ---------------------------------------------------------------------------
-# Telegram WebApp initData tekshiruvi
-# ---------------------------------------------------------------------------
-def verify_init_data(init_data: str):
-    if not init_data or not BOT_TOKEN:
-        return None
-    try:
-        pairs = dict(parse_qsl(init_data, strict_parsing=True))
-    except ValueError:
-        return None
-
-    received_hash = pairs.pop("hash", None)
-    if not received_hash:
-        return None
-
-    data_check_string = "\n".join(
-        f"{k}={v}" for k, v in sorted(pairs.items())
-    )
-    secret_key = hmac.new(
-        b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256
-    ).digest()
-    computed_hash = hmac.new(
-        secret_key, data_check_string.encode(), hashlib.sha256
-    ).hexdigest()
-
-    if not hmac.compare_digest(computed_hash, received_hash):
-        return None
-
-    user_raw = pairs.get("user")
-    if not user_raw:
-        return None
-    try:
-        user = json.loads(user_raw)
-    except json.JSONDecodeError:
-        return None
-
-    return user
-
-
-def require_auth():
-    init_data = request.headers.get("X-Telegram-Init-Data", "")
-    user = verify_init_data(init_data)
-    if user is None:
-        return None, (jsonify({"error": "Telegram orqali kiring"}), 401)
-    return user, None
-
-
-def require_registered():
-    user, err = require_auth()
-    if err:
-        return None, err
-    db_user = get_user(user["id"])
-    if not db_user:
-        return None, (jsonify({
-            "error": "not_registered",
-            "message": "Avval botda ro'yxatdan o'ting"
-        }), 403)
-    return user, None
-
-
-def is_admin_user(telegram_id):
-    return ADMIN_ID != 0 and telegram_id == ADMIN_ID
-
-
-def require_admin():
-    user, err = require_registered()
-    if err:
-        return None, err
-    if not is_admin_user(user["id"]):
-        return None, (jsonify({
-            "error": "faqat admin tahrirlashi/o'chirishi mumkin"
-        }), 403)
-    return user, None
-
-
-# ---------------------------------------------------------------------------
-# Sahifalar va API
-# ---------------------------------------------------------------------------
-def to_utc_iso(dt):
-    return dt.isoformat() + "Z"
-
-
-@app.route("/")
-def index():
-    return render_template("index.html", bot_username=BOT_USERNAME)
-
-
-@app.route("/api/me")
-def api_me():
-    user, err = require_auth()
-    if err:
-        return err
-    db_user = get_user(user["id"])
-    if not db_user:
-        return jsonify({"registered": False}), 200
-    return jsonify({
-        "registered": True,
-        "first_name": db_user["first_name"] or user.get("first_name", ""),
-        "phone": db_user["phone"],
-        "is_admin": is_admin_user(user["id"]),
-    }), 200
-
-
-@app.route("/api/transactions", methods=["GET"])
-def api_list_transactions():
-    user, err = require_registered()
-    if err:
-        return err
-    rows = get_transactions(user["id"])
-    result = [{
-        "id": r["id"],
-        "type": r["type"],
-        "amount": float(r["amount"]),
-        "category": r["category"],
-        "note": r["note"],
-        "created_at": to_utc_iso(r["created_at"]),
-    } for r in rows]
-    return jsonify(result)
-
-
-@app.route("/api/transactions", methods=["POST"])
-def api_add_transaction():
-    user, err = require_registered()
-    if err:
-        return err
-
-    data = request.get_json(silent=True) or {}
-    type_ = data.get("type")
-    amount = data.get("amount")
-    category = (data.get("category") or "").strip()[:100]
-    note = (data.get("note") or "").strip()[:200]
-
-    if type_ not in ("income", "expense"):
-        return jsonify({"error": "noto'g'ri turi"}), 400
-    try:
-        amount = float(amount)
-    except (TypeError, ValueError):
-        return jsonify({"error": "noto'g'ri summa"}), 400
-    if amount <= 0:
-        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
-    if type_ == "expense" and not category:
-        return jsonify({"error": "kategoriya kerak"}), 400
-
-    row = add_transaction(user["id"], type_, amount, category or "kirim", note)
-    return jsonify({
-        "id": row["id"],
-        "type": row["type"],
-        "amount": float(row["amount"]),
-        "category": row["category"],
-        "note": row["note"],
-        "created_at": to_utc_iso(row["created_at"]),
-    }), 201
-
-
-@app.route("/api/transactions/<int:tx_id>", methods=["PUT"])
-def api_update_transaction(tx_id):
-    user, err = require_admin()
-    if err:
-        return err
-
-    data = request.get_json(silent=True) or {}
-    type_ = data.get("type")
-    amount = data.get("amount")
-    category = (data.get("category") or "").strip()[:100]
-    note = (data.get("note") or "").strip()[:200]
-
-    if type_ not in ("income", "expense"):
-        return jsonify({"error": "noto'g'ri turi"}), 400
-    try:
-        amount = float(amount)
-    except (TypeError, ValueError):
-        return jsonify({"error": "noto'g'ri summa"}), 400
-    if amount <= 0:
-        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
-    if type_ == "expense" and not category:
-        return jsonify({"error": "kategoriya kerak"}), 400
-
-    row = update_transaction(user["id"], tx_id, type_, amount, category or "kirim", note)
-    if not row:
-        return jsonify({"error": "topilmadi"}), 404
-
-    return jsonify({
-        "id": row["id"],
-        "type": row["type"],
-        "amount": float(row["amount"]),
-        "category": row["category"],
-        "note": row["note"],
-        "created_at": to_utc_iso(row["created_at"]),
-    }), 200
-
-
-@app.route("/api/transactions/<int:tx_id>", methods=["DELETE"])
-def api_delete_transaction(tx_id):
-    user, err = require_admin()
-    if err:
-        return err
-    ok = delete_transaction(user["id"], tx_id)
-    if not ok:
-        return jsonify({"error": "topilmadi"}), 404
-    return jsonify({"success": True})
-
-
-# ---------------------------------------------------------------------------
-# API — Qarz daftari
-# ---------------------------------------------------------------------------
-def serialize_debt(row):
-    return {
-        "id": row["id"],
-        "direction": row["direction"],
-        "person_name": row["person_name"],
-        "amount": float(row["amount"]),
-        "note": row["note"],
-        "is_paid": row["is_paid"],
-        "is_payment": bool(row["is_payment"]),
-        "created_at": to_utc_iso(row["created_at"]),
-        "paid_at": to_utc_iso(row["paid_at"]) if row["paid_at"] else None,
-    }
-
-
-@app.route("/api/debts", methods=["GET"])
-def api_list_debts():
-    user, err = require_registered()
-    if err:
-        return err
-    rows = get_debts(user["id"])
-    return jsonify([serialize_debt(r) for r in rows])
-
-
-@app.route("/api/debts", methods=["POST"])
-def api_add_debt():
-    user, err = require_registered()
-    if err:
-        return err
-
-    data = request.get_json(silent=True) or {}
-    direction = data.get("direction")
-    person_name = (data.get("person_name") or "").strip()[:100]
-    amount = data.get("amount")
-    note = (data.get("note") or "").strip()[:200]
-    is_payment = bool(data.get("is_payment", False))
-
-    if direction not in ("given", "taken"):
-        return jsonify({"error": "noto'g'ri turi"}), 400
-    if not person_name:
-        return jsonify({"error": "ism kiritilmagan"}), 400
-    try:
-        amount = float(amount)
-    except (TypeError, ValueError):
-        return jsonify({"error": "noto'g'ri summa"}), 400
-    if amount <= 0:
-        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
-
-    row = add_debt(user["id"], direction, person_name, amount, note, is_payment)
-    return jsonify(serialize_debt(row)), 201
-
-
-@app.route("/api/debts/<int:debt_id>", methods=["PUT"])
-def api_update_debt(debt_id):
-    user, err = require_admin()
-    if err:
-        return err
-
-    existing = get_debt(user["id"], debt_id)
-    if not existing:
-        return jsonify({"error": "topilmadi"}), 404
-
-    data = request.get_json(silent=True) or {}
-
-    if "is_paid" in data and len(data) == 1:
-        row = set_debt_paid(user["id"], debt_id, bool(data["is_paid"]))
-        return jsonify(serialize_debt(row))
-
-    person_name = (data.get("person_name") or "").strip()[:100]
-    amount = data.get("amount")
-    note = (data.get("note") or "").strip()[:200]
-
-    if not person_name:
-        return jsonify({"error": "ism kiritilmagan"}), 400
-    try:
-        amount = float(amount)
-    except (TypeError, ValueError):
-        return jsonify({"error": "noto'g'ri summa"}), 400
-    if amount <= 0:
-        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
-
-    row = update_debt(user["id"], debt_id, person_name, amount, note)
-    if not row:
-        return jsonify({"error": "topilmadi"}), 404
-    return jsonify(serialize_debt(row))
-
-
-@app.route("/api/debts/<int:debt_id>", methods=["DELETE"])
-def api_delete_debt(debt_id):
-    user, err = require_admin()
-    if err:
-        return err
-    ok = delete_debt(user["id"], debt_id)
-    if not ok:
-        return jsonify({"error": "topilmadi"}), 404
-    return jsonify({"success": True})
 
 
 # ---------------------------------------------------------------------------
@@ -1000,7 +1000,7 @@ def api_export_send():
         return jsonify({"error": "noto'g'ri format"}), 400
 
     db_user = get_user(user["id"])
-    display_name = db_user["first_name"] or user.get("first_name", "Foydalanuvchi")
+    display_name = db_user.get("first_name") or user.get("first_name", "Foydalanuvchi")
 
     try:
         if fmt == "excel":
@@ -1026,7 +1026,7 @@ def api_export_excel():
     if err:
         return err
     db_user = get_user(user["id"])
-    display_name = db_user["first_name"] or user.get("first_name", "Foydalanuvchi")
+    display_name = db_user.get("first_name") or user.get("first_name", "Foydalanuvchi")
 
     buf = generate_excel_report(user["id"], display_name)
     filename = f"hisobchi_{datetime.utcnow().strftime('%Y%m%d')}.xlsx"
@@ -1044,7 +1044,7 @@ def api_export_pdf():
     if err:
         return err
     db_user = get_user(user["id"])
-    display_name = db_user["first_name"] or user.get("first_name", "Foydalanuvchi")
+    display_name = db_user.get("first_name") or user.get("first_name", "Foydalanuvchi")
 
     buf = generate_pdf_report(user["id"], display_name)
     filename = f"hisobchi_{datetime.utcnow().strftime('%Y%m%d')}.pdf"
@@ -1054,6 +1054,38 @@ def api_export_pdf():
         as_attachment=True,
         download_name=filename,
     )
+
+
+# ---------------------------------------------------------------------------
+# Admin — foydalanuvchini o'chirish
+# ---------------------------------------------------------------------------
+@app.route("/api/admin/users/<int:user_id>", methods=["DELETE"])
+def api_admin_delete_user(user_id):
+    user, err = require_admin()
+    if err:
+        return err
+    
+    users = _load_json(USERS_FILE, {})
+    if str(user_id) not in users:
+        return jsonify({"error": "foydalanuvchi topilmadi"}), 404
+    
+    # Foydalanuvchini o'chirish
+    del users[str(user_id)]
+    _save_json(USERS_FILE, users)
+    
+    # Tranzaksiyalarni o'chirish
+    all_tx = _load_json(TRANSACTIONS_FILE, {})
+    if str(user_id) in all_tx:
+        del all_tx[str(user_id)]
+        _save_json(TRANSACTIONS_FILE, all_tx)
+    
+    # Qarzlarni o'chirish
+    all_debts = _load_json(DEBTS_FILE, {})
+    if str(user_id) in all_debts:
+        del all_debts[str(user_id)]
+        _save_json(DEBTS_FILE, all_debts)
+    
+    return jsonify({"success": True})
 
 
 # ---------------------------------------------------------------------------
@@ -1098,7 +1130,7 @@ def webapp_keyboard(is_admin: bool = False) -> InlineKeyboardMarkup:
 
 
 def format_monthly_report(summary: dict) -> str:
-    now = datetime.now()
+    now = datetime.utcnow()
     month_name = UZ_MONTHS[now.month - 1]
 
     def fmt(n):
@@ -1231,8 +1263,8 @@ async def on_admin_panel(callback: CallbackQuery):
     if stats["recent_users"]:
         lines.append("\n<b>So'nggi ro'yxatdan o'tganlar:</b>")
         for u in stats["recent_users"]:
-            name = u["first_name"] or "noma'lum"
-            phone = u["phone"] or "-"
+            name = u.get("first_name") or "noma'lum"
+            phone = u.get("phone") or "-"
             lines.append(f"• {name} — {phone}")
 
     await callback.message.answer("\n".join(lines), reply_markup=webapp_keyboard(True))
@@ -1256,7 +1288,6 @@ async def _run_polling():
 
 def start_bot():
     """Alohida thread ichidan chaqiriladi."""
-    init_db()
     asyncio.run(_run_polling())
 
 
@@ -1274,8 +1305,9 @@ def run_bot_thread():
 
 
 if __name__ == "__main__":
-    init_db()
-    logger.info("Database initialized")
+    # `data/` papkasini yaratamiz
+    DATA_DIR.mkdir(exist_ok=True)
+    logger.info("JSON ma'lumotlar bazasi tayyor")
 
     bot_thread = threading.Thread(target=run_bot_thread, daemon=True)
     bot_thread.start()
