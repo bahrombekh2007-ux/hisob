@@ -1119,6 +1119,156 @@ def api_admin_update_user(user_id):
     return jsonify(serialize_admin_user(users[str(user_id)], all_tx, all_debts))
 
 
+@app.route("/api/admin/users/<int:user_id>/details", methods=["GET"])
+def api_admin_user_details(user_id):
+    """Bitta foydalanuvchining to'liq ma'lumotini qaytaradi:
+    profil, barcha tranzaksiyalar, barcha qarzlar va umumiy hisob-kitob."""
+    user, err = require_admin()
+    if err:
+        return err
+
+    users = _load_json(USERS_FILE, {})
+    target = users.get(str(user_id))
+    if not target:
+        return jsonify({"error": "foydalanuvchi topilmadi"}), 404
+
+    tx_rows = get_transactions(user_id)
+    debt_rows = get_debts(user_id)
+
+    income = sum(float(t["amount"]) for t in tx_rows if t["type"] == "income")
+    expense = sum(float(t["amount"]) for t in tx_rows if t["type"] == "expense")
+
+    given_net = 0.0
+    taken_net = 0.0
+    for d in debt_rows:
+        signed = -float(d["amount"]) if d.get("is_payment") else float(d["amount"])
+        if d["direction"] == "given":
+            given_net += signed
+        else:
+            taken_net += signed
+
+    all_tx = _load_json(TRANSACTIONS_FILE, {})
+    all_debts = _load_json(DEBTS_FILE, {})
+
+    return jsonify({
+        "user": serialize_admin_user(target, all_tx, all_debts),
+        "summary": {
+            "income": income,
+            "expense": expense,
+            "balance": income - expense,
+            "debt_given": given_net,
+            "debt_taken": taken_net,
+        },
+        "transactions": [{
+            "id": r["id"],
+            "type": r["type"],
+            "amount": float(r["amount"]),
+            "category": r.get("category", ""),
+            "note": r.get("note", ""),
+            "created_at": r.get("created_at", ""),
+        } for r in tx_rows],
+        "debts": [serialize_debt(r) for r in debt_rows],
+    })
+
+
+@app.route("/api/admin/users/<int:user_id>/transactions/<int:tx_id>", methods=["PUT"])
+def api_admin_update_transaction(user_id, tx_id):
+    """Admin — istalgan foydalanuvchining tranzaksiyasini tahrirlaydi."""
+    admin_user, err = require_admin()
+    if err:
+        return err
+
+    data = request.get_json(silent=True) or {}
+    type_ = data.get("type")
+    amount = data.get("amount")
+    category = (data.get("category") or "").strip()[:100]
+    note = (data.get("note") or "").strip()[:200]
+
+    if type_ not in ("income", "expense"):
+        return jsonify({"error": "noto'g'ri turi"}), 400
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "noto'g'ri summa"}), 400
+    if amount <= 0:
+        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
+    if type_ == "expense" and not category:
+        return jsonify({"error": "kategoriya kerak"}), 400
+
+    row = update_transaction(user_id, tx_id, type_, amount, category or "kirim", note)
+    if not row:
+        return jsonify({"error": "topilmadi"}), 404
+
+    return jsonify({
+        "id": row["id"],
+        "type": row["type"],
+        "amount": float(row["amount"]),
+        "category": row.get("category", ""),
+        "note": row.get("note", ""),
+        "created_at": row.get("created_at", ""),
+    }), 200
+
+
+@app.route("/api/admin/users/<int:user_id>/transactions/<int:tx_id>", methods=["DELETE"])
+def api_admin_delete_transaction(user_id, tx_id):
+    """Admin — istalgan foydalanuvchining tranzaksiyasini o'chiradi."""
+    admin_user, err = require_admin()
+    if err:
+        return err
+    ok = delete_transaction(user_id, tx_id)
+    if not ok:
+        return jsonify({"error": "topilmadi"}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/api/admin/users/<int:user_id>/debts/<int:debt_id>", methods=["PUT"])
+def api_admin_update_debt(user_id, debt_id):
+    """Admin — istalgan foydalanuvchining qarz yozuvini tahrirlaydi."""
+    admin_user, err = require_admin()
+    if err:
+        return err
+
+    existing = get_debt(user_id, debt_id)
+    if not existing:
+        return jsonify({"error": "topilmadi"}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    if "is_paid" in data and len(data) == 1:
+        row = set_debt_paid(user_id, debt_id, bool(data["is_paid"]))
+        return jsonify(serialize_debt(row))
+
+    person_name = (data.get("person_name") or "").strip()[:100]
+    amount = data.get("amount")
+    note = (data.get("note") or "").strip()[:200]
+
+    if not person_name:
+        return jsonify({"error": "ism kiritilmagan"}), 400
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "noto'g'ri summa"}), 400
+    if amount <= 0:
+        return jsonify({"error": "summa 0 dan katta bo'lishi kerak"}), 400
+
+    row = update_debt(user_id, debt_id, person_name, amount, note)
+    if not row:
+        return jsonify({"error": "topilmadi"}), 404
+    return jsonify(serialize_debt(row))
+
+
+@app.route("/api/admin/users/<int:user_id>/debts/<int:debt_id>", methods=["DELETE"])
+def api_admin_delete_debt(user_id, debt_id):
+    """Admin — istalgan foydalanuvchining qarz yozuvini o'chiradi."""
+    admin_user, err = require_admin()
+    if err:
+        return err
+    ok = delete_debt(user_id, debt_id)
+    if not ok:
+        return jsonify({"error": "topilmadi"}), 404
+    return jsonify({"success": True})
+
+
 @app.route("/api/admin/users/<int:user_id>", methods=["DELETE"])
 def api_admin_delete_user(user_id):
     user, err = require_admin()
